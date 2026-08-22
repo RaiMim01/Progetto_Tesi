@@ -1,0 +1,8 @@
+# Ignora il database vettoriale locale e la cartella dei documenti
+vector_db/
+documents/
+__pycache__/
+.DS_Store
+
+# Ignora l'ambiente virtuale
+venv/
