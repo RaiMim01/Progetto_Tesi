@@ -1,4 +1,4 @@
-# Ignora il database vettoriale locale e la cartella dei documenti
+# File e cartelle da ignorare e non caricare su GitHub
 vector_db/
 documents/
 __pycache__/
