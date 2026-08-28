@@ -78,19 +78,18 @@ def main():
     print(f"6. Calcolo tensori PyTorch e scrittura a lotti in ChromaDB...", flush=True)
     start_total = time.time()
 
-    # Loop di processamento a blocchi per la massima scalabilità
+    # Loop per il calcolo degli embedding e il salvataggio del database
     for i in range(0, len(chunks), BATCH_SIZE):
         batch = chunks[i : i + BATCH_SIZE]
         batch_texts = [doc.page_content for doc in batch]
         batch_metadatas = [doc.metadata for doc in batch]
         
-        # MODIFICA: Invece di generare "doc_j", usiamo la nostra lista di ID intelligenti
         batch_ids = all_ids[i : i + BATCH_SIZE]
 
-        # Calcolo dei tensori PyTorch 
+        # Calcolo degli embedding con PyTorch e il modello di embedding
         tensors = embedding_model.encode(batch_texts, convert_to_tensor=True)
 
-        # Stampa accademica per la tesi al primo ciclo
+        # Stampa di verifica al primo ciclo
         if i == 0:
             print("\n--- DIMOSTRAZIONE TECNICA PYTORCH (Primo Batch) ---")
             print(f"Tipo di oggetto generato: {type(tensors)}")
@@ -99,10 +98,10 @@ def main():
             print(f"Esempio di ID Intelligente: {batch_ids[0]}")
             print("---------------------------------------------------\n")
 
-        # Conversione per il salvataggio nel database vettoriale
+        # Conversione per il salvataggio nel database
         embeddings_list = tensors.cpu().tolist()
 
-        # MODIFICA: Usiamo 'upsert' al posto di 'add' per sovrascrivere se esiste già
+        # Salvataggio dei dati nel database ChromaDB con un update o una insert (upsert)
         collection.upsert(
             documents=batch_texts,
             embeddings=embeddings_list,

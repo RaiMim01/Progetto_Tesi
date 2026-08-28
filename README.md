@@ -1,1 +1,1 @@
-Progetto per la mia tesi triennale in Ingegneria Elettronica ed Informatica UNIFE
+Progetto per la tesi triennale in Ingegneria Elettronica ed Informatica UNIFE
