@@ -51,7 +51,7 @@ def main():
     print(f"\n--- RISULTATI GREZZI ESTRATTI DA CHROMADB (Top {len(documents)}) ---")
     for idx, (doc, meta, dist) in enumerate(zip(documents, metadatas, distances), start=1):
         # La distanza L2/Coseno: valori più bassi indicano maggiore similarità semantica
-        print(f"\n[Risultato {idx}] | Distanza Vettoriale: {dist:.4f}")
+        print(f"\n[Risultato {idx}] | Distanza Coseno: {dist:.4f}")
         print(f"Fonte: {meta.get('source', 'N/D')} - Pagina: {meta.get('page', 'N/D')}")
         print(f"Testo: {doc[:150].strip()}...")
         print("-" * 50)

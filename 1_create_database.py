@@ -1,5 +1,6 @@
 import os
 import sys
+import re
 import hashlib
 import time
 import warnings
@@ -28,6 +29,12 @@ def main():
     if not documents:
         print(f"Nessun file PDF trovato in '{DATA_PATH}'. Aggiungi i tuoi file e riprova.", flush=True)
         return
+
+    # Pulizia del testo da spazi e a-capo anomali
+    print("   Pulizia del testo in corso...", flush=True)
+    for doc in documents:
+        doc.page_content = re.sub(r"\s+", " ", doc.page_content).strip()
+    
     print(f"2. Caricate con successo {len(documents)} pagine totali dai PDF.", flush=True)
 
     # 2. Taglio del testo in chunk
@@ -73,7 +80,8 @@ def main():
     # 4. Inizializzazione Vector Database Locale (ChromaDB)
     print(f"5. Connessione al Vector DB locale ('{CHROMA_PATH}')...", flush=True)
     client = chromadb.PersistentClient(path=CHROMA_PATH)
-    collection = client.get_or_create_collection(name="knowledge_base")
+    # creazione della collection "knowledge_base" con metadati per la Cosine Similarity 
+    collection = client.get_or_create_collection(name="knowledge_base", metadata={"hnsw:space": "cosine"})
 
     print(f"6. Calcolo tensori PyTorch e scrittura a lotti in ChromaDB...", flush=True)
     start_total = time.time()
