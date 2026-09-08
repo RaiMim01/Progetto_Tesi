@@ -74,8 +74,8 @@ def main():
         all_ids.append(custom_id)
     
     # 3. Modello di Embedding (SentenceTransformers su PyTorch)
-    print("4. Caricamento modello 'all-MiniLM-L6-v2'...", flush=True)
-    embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+    print("4. Caricamento modello MODIFICA DA'all-MiniLM-L6-v2' A 'paraphrase-multilingual-MiniLM-L12-v2'...", flush=True)
+    embedding_model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
 
     # 4. Inizializzazione Vector Database Locale (ChromaDB)
     print(f"5. Connessione al Vector DB locale ('{CHROMA_PATH}')...", flush=True)
