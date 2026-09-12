@@ -3,6 +3,7 @@ vector_db/
 documents/
 __pycache__/
 .DS_Store
+.env
 
 # Ignora l'ambiente virtuale
 venv/

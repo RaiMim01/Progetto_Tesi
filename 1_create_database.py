@@ -34,13 +34,16 @@ def main():
     print("   Pulizia del testo in corso...", flush=True)
     for doc in documents:
         doc.page_content = re.sub(r"\s+", " ", doc.page_content).strip()
+        # Converte il conteggio da 0 (default di pypdf) a 1 (pagina reale del PDF)
+        if "page" in doc.metadata:
+            doc.metadata["page"] = doc.metadata["page"] + 1
     
     print(f"2. Caricate con successo {len(documents)} pagine totali dai PDF.", flush=True)
 
     # 2. Taglio del testo in chunk
     text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=600,
-        chunk_overlap=100,
+        chunk_size=1100,      # Aumentato da 600 a 1100 per mantenere il contesto dei paragrafi
+        chunk_overlap=200,     # Aumentato da 100 a 200 per evitare tagli sui margini
         length_function=len,
         is_separator_regex=False,
     )
