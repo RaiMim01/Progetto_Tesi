@@ -100,21 +100,21 @@ def run_rag_pipeline(user_query: str):
         formatted_context += f"--- DOCUMENTO {idx} (ID Chunk: {chunk_id} | Fonte: {source} - Pag: {page}) ---\n{text}\n\n"
 
     prompt = f"""Sei un orientatore universitario rigoroso, preciso ed esaustivo.
-Il tuo compito è rispondere alla domanda dell'utente basandoti ESCLUSIVAMENTE sui documenti forniti nel CONTESTO sottostante.
+    Il tuo compito è rispondere alla domanda dell'utente basandoti ESCLUSIVAMENTE sui documenti forniti nel CONTESTO sottostante.
 
-REGOLE TASSATIVE DI RISPOSTA:
-1. FEDELTÀ TESTUALE ASSOLUTA: Utilizza ESATTAMENTE i nomi delle figure professionali e dei settori presenti nel testo. NON inventare, sintetizzare con sinonimi o parafrasare i titoli.
-2. NESSUNA ALLUCINAZIONE: Se un'informazione non è esplicitamente citata nei documenti, NON includerla per alcun motivo.
-3. CITAZIONE FONTI: Alla fine di OGNI concetto o ruolo riportato, inserisci la citazione esatta usando il file e la pagina indicati. Formato obbligatorio: [Fonte: NOME_FILE, Pag. X]
-4. STRUTTURA: Presenta i ruoli e gli sbocchi in un elenco puntato chiaro e descrittivo.
+    REGOLE TASSATIVE DI RISPOSTA:
+    1. FEDELTÀ TESTUALE ASSOLUTA: Utilizza ESATTAMENTE i nomi delle figure professionali e dei settori presenti nel testo. NON inventare, sintetizzare con sinonimi o parafrasare i titoli.
+    2. NESSUNA ALLUCINAZIONE: Se un'informazione non è esplicitamente citata nei documenti, NON includerla per alcun motivo.
+    3. CITAZIONE FONTI: Alla fine di OGNI concetto o ruolo riportato, inserisci la citazione esatta usando il file e la pagina indicati. Formato obbligatorio: [Fonte: NOME_FILE, Pag. X]
+    4. STRUTTURA: Presenta i ruoli e gli sbocchi in un elenco puntato chiaro e descrittivo.
 
-CONTESTO DEI DOCUMENTI ESTRATTI:
-{formatted_context}
+    CONTESTO DEI DOCUMENTI ESTRATTI:
+    {formatted_context}
 
-DOMANDA DELL'UTENTE:
-{user_query}
+    DOMANDA DELL'UTENTE:
+    {user_query}
 
-RISPOSTA:"""
+    RISPOSTA:"""
 
     response = ai_client.models.generate_content(
         model='gemini-3.6-flash',
