@@ -1,6 +1,6 @@
 # Interfaccia Grafica, API e Variabili d'Ambiente
 streamlit
-google-genai
+google-generativeai
 python-dotenv
 
 # Caricamento e Chunking dei Documenti (1_create_database.py)
@@ -20,5 +20,6 @@ torch
 sentence-transformers
 
 # Compatibilità Modelli Hugging Face e Gestione Tensori Visivi
-transformers==4.51.3
+transformers==4.46.3
+# qwen-vl-utils Per Alibaba da rivedere
 einops
