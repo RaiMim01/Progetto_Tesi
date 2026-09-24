@@ -1,0 +1,24 @@
+# Interfaccia Grafica, API e Variabili d'Ambiente
+streamlit
+google-genai
+python-dotenv
+
+# Caricamento e Chunking dei Documenti (1_create_database.py)
+langchain-community
+langchain-text-splitters
+pypdf
+
+# Gestione PDF ed Estrazione Immagini per RAG Multimodale (3_create_database_multimodal.py)
+pymupdf
+Pillow
+
+# Vector Database (ChromaDB)
+chromadb
+
+# Framework di Deep Learning e Modelli di Embedding (Bi-Encoder e Cross-Encoder)
+torch
+sentence-transformers
+
+# Compatibilità Modelli Hugging Face e Gestione Tensori Visivi
+transformers==4.51.3
+einops
