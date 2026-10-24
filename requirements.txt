@@ -13,10 +13,14 @@ pymupdf
 Pillow
 
 # Vector Database (ChromaDB)
-chromadb
+chromadb==0.3.29
+duckdb==0.8.1
+# pysqlite3-binary
+# posthog<3.1.0
 
 # Framework di Deep Learning e Modelli di Embedding (Bi-Encoder e Cross-Encoder)
-torch
+# PyTorch installato tramite librerie ufficiale JetPack per NVIDIA
+tokenizers==0.20.3
 sentence-transformers
 
 # Compatibilità Modelli Hugging Face e Gestione Tensori Visivi

@@ -1,14 +1,27 @@
+try:
+    __import__('pysqlite3')
+    import sys
+    sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+except ImportError:
+    pass
+
+import os
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
+
 import warnings
 warnings.filterwarnings("ignore")
 
-import os
+import json
+import time
+import urllib.request
+import urllib.error
 import torch
 import torch.nn as nn
 import chromadb
+from chromadb.config import Settings
 import streamlit as st
 from sentence_transformers import SentenceTransformer, CrossEncoder
 from dotenv import load_dotenv
-from google import genai
 
 # ==========================================
 # 1. CONFIGURAZIONE PAGINA STREAMLIT
@@ -27,18 +40,24 @@ st.set_page_config(
 @st.cache_resource
 def load_rag_resources():
     load_dotenv()
-    gemini_api_key = os.getenv("GEMINI_API_KEY")
+    gemini_api_key = os.getenv("GEMINI_API_KEY", "").strip().strip('"').strip("'")
     
     if not gemini_api_key:
         st.error("🔑 Errore: Chiamata API fallita. Manca GEMINI_API_KEY nel file .env!")
         st.stop()
         
-    # Inizializzazione Client Gemini Cloud
-    ai_client = genai.Client(api_key=gemini_api_key)
+    # Connessione ChromaDB (Sintassi nativa per ChromaDB 0.3.29 con DuckDB)
+    chroma_client = chromadb.Client(Settings(
+        chroma_db_impl="duckdb+parquet",
+        persist_directory="vector_db",
+        anonymized_telemetry=False
+    ))
     
-    # Connessione ChromaDB
-    chroma_client = chromadb.PersistentClient(path="vector_db")
-    collection = chroma_client.get_collection(name="knowledge_base")
+    try:
+        collection = chroma_client.get_collection(name="knowledge_base")
+    except Exception:
+        st.error("ERRORE: Impossibile trovare la collezione 'knowledge_base'. Esegui prima '1_create_database.py'.")
+        st.stop()
     
     # Modello Bi-Encoder (Fase 1)
     embedding_model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
@@ -46,10 +65,10 @@ def load_rag_resources():
     # Modello Cross-Encoder (Fase 2)
     reranker = CrossEncoder('cross-encoder/mmarco-mMiniLMv2-L12-H384-v1')
     
-    return ai_client, collection, embedding_model, reranker
+    return gemini_api_key, collection, embedding_model, reranker
 
 # Caricamento risorse in memoria
-ai_client, collection, embedding_model, reranker = load_rag_resources()
+gemini_api_key, collection, embedding_model, reranker = load_rag_resources()
 
 # ==========================================
 # 3. PIPELINE DI RETRIEVAL E SINTESI
@@ -71,7 +90,7 @@ def run_rag_pipeline(user_query: str):
     query_doc_pairs = [[user_query, doc] for doc in documents]
     scores_tensor = reranker.predict(
         query_doc_pairs,
-        activation_fn=nn.Sigmoid(),
+        activation_fct=nn.Sigmoid(),
         convert_to_tensor=True,
         batch_size=8
     )
@@ -90,41 +109,65 @@ def run_rag_pipeline(user_query: str):
     ranked_results.sort(key=lambda x: x['rerank_score'], reverse=True)
     top_6 = ranked_results[:6]
 
-    # FASE 3: Prompt Engineering e LLM
+    # FASE 3: Prompt Engineering e LLM (Chiamata REST a Gemini)
     formatted_context = ""
     for idx, item in enumerate(top_6, start=1):
         source = item['metadata'].get('source', 'Sconosciuta')
         page = item['metadata'].get('page', 'Sconosciuta')
         chunk_id = item['chunk_id']
         text = item['doc']
-        formatted_context += f"--- DOCUMENTO {idx} (ID Chunk: {chunk_id} | Fonte: {source} - Pag: {page}) ---\n{text}\n\n"
+        formatted_context += f"--- DOCUMENTO {idx} (ID Chunk: {chunk_id} | Fonte: {source} | Pag: {page}) ---\n{text}\n\n"
 
     prompt = f"""Sei un orientatore universitario rigoroso, preciso ed esaustivo.
-    Il tuo compito è rispondere alla domanda dell'utente basandoti ESCLUSIVAMENTE sui documenti forniti nel CONTESTO sottostante.
+Il tuo compito è rispondere alla domanda dell'utente basandoti ESCLUSIVAMENTE sui documenti forniti nel CONTESTO sottostante.
 
-    REGOLE TASSATIVE DI RISPOSTA:
-    1. FEDELTÀ TESTUALE ASSOLUTA: Utilizza ESATTAMENTE i nomi delle figure professionali e dei settori presenti nel testo. NON inventare, sintetizzare con sinonimi o parafrasare i titoli.
-    2. NESSUNA ALLUCINAZIONE: Se un'informazione non è esplicitamente citata nei documenti, NON includerla per alcun motivo.
-    3. CITAZIONE FONTI: Alla fine di OGNI concetto o ruolo riportato, inserisci la citazione esatta usando il file e la pagina indicati. Formato obbligatorio: [Fonte: NOME_FILE, Pag. X]
-    4. STRUTTURA: Presenta i ruoli e gli sbocchi in un elenco puntato chiaro e descrittivo.
+REGOLE TASSATIVE DI RISPOSTA:
+1. FEDELTÀ TESTUALE ASSOLUTA: Utilizza ESATTAMENTE i nomi delle figure professionali e dei settori presenti nel testo. NON inventare, sintetizzare con sinonimi o parafrasare i titoli.
+2. NESSUNA ALLUCINAZIONE: Se un'informazione non è esplicitamente citata nei documenti, NON includerla per alcun motivo.
+3. CITAZIONE FONTI: Alla fine di OGNI concetto o ruolo riportato, inserisci la citazione esatta usando il file e la pagina indicati. Formato obbligatorio: [Fonte: NOME_FILE, Pag. X]
+4. STRUTTURA: Presenta i ruoli e gli sbocchi in un elenco puntato chiaro e descrittivo.
 
-    CONTESTO DEI DOCUMENTI ESTRATTI:
-    {formatted_context}
+CONTESTO DEI DOCUMENTI ESTRATTI:
+{formatted_context}
 
-    DOMANDA DELL'UTENTE:
-    {user_query}
+DOMANDA DELL'UTENTE:
+{user_query}
 
-    RISPOSTA:"""
+RISPOSTA:"""
 
-    response = ai_client.models.generate_content(
-        model='gemini-3.6-flash',
-        contents=prompt,
-        config=genai.types.GenerateContentConfig(
-            temperature=0.1
-        )
-    )
+    # Chiamata API REST con retry per sovraccarichi temporanei
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={gemini_api_key}"
     
-    return response.text, top_6
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.1}
+    }
+
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"}
+    )
+
+    answer_text = None
+    for attempt in range(1, 4):
+        try:
+            with urllib.request.urlopen(req) as resp:
+                res_data = json.loads(resp.read().decode("utf-8"))
+                answer_text = res_data['candidates'][0]['content']['parts'][0]['text']
+                break
+        except urllib.error.HTTPError as err:
+            if err.code == 503 and attempt < 3:
+                time.sleep(2 * attempt)
+            else:
+                return f"⚠️ Errore HTTP {err.code}: {err.reason}", top_6
+        except Exception as err:
+            return f"⚠️ Errore durante la chiamata a Gemini: {err}", top_6
+
+    if not answer_text:
+        answer_text = "⚠️ Server Google temporaneamente occupati. Riprova tra qualche secondo."
+
+    return answer_text, top_6
 
 # ==========================================
 # 4. INTERFACCIA UTENTE (STREAMLIT FRONTEND)
@@ -137,9 +180,9 @@ with st.sidebar:
     st.markdown("""
     **Specifiche di Sistema:**
     * **Embedding:** `paraphrase-multilingual-MiniLM-L12-v2`
-    * **Vector DB:** ChromaDB (Cosine Distance)
+    * **Vector DB:** ChromaDB 0.3.29 (DuckDB + Parquet)
     * **Re-ranker:** Cross-Encoder PyTorch (`mMiniLMv2-L12`)
-    * **Sintesi:** Gemini 3.6 Flash (`temp=0.1`)
+    * **Sintesi:** Gemini Flash REST API (`temp=0.1`)
     """)
     st.divider()
     if st.button("🗑️ Cancella Cronologia Chat"):

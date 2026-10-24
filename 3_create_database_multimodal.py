@@ -1,57 +1,116 @@
+try:
+    __import__('pysqlite3')
+    import sys
+    sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+except ImportError:
+    pass
+
 import os
-import hashlib
+import sys
+import typing
+
+# 1. Patch ForwardRef per compatibilità Python 3.8
+if not hasattr(typing.ForwardRef, '__annotations__'):
+    typing.ForwardRef.__annotations__ = property(lambda self: {})
+
 import time
 import warnings
 from PIL import Image
 warnings.filterwarnings("ignore")
 
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"  # Disabilita gli avvisi del tokenizer
+
 print("Avvio dello script in corso...", flush=True)
 
 import chromadb
-import pymupdf as fitz  # PyMuPDF: libreria per estrarre immagini dai PDF
+from chromadb.config import Settings
+import pymupdf as fitz  # PyMuPDF
 import torch
-from sentence_transformers import SentenceTransformer
+from transformers import AutoModel
+from transformers.image_processing_utils import BaseImageProcessor
+
+# 2. Patch su __call__ di BaseImageProcessor
+_orig_image_call = BaseImageProcessor.__call__
+
+def _patched_image_call(self, images=None, **kwargs):
+    for text_param in ["padding", "max_length", "stride", "truncation", "pad_to_multiple_of"]:
+        kwargs.pop(text_param, None)
+    return _orig_image_call(self, images=images, **kwargs)
+
+BaseImageProcessor.__call__ = _patched_image_call
 
 # ==========================================
 # CONFIGURAZIONE PARAMETRI MULTIMODALI
 # ==========================================
 DATA_PATH = "documents"
 CHROMA_PATH = "vector_db"
-BATCH_SIZE = 1  # TASSATIVO a 1 per CPU i3 con modello da 2B parametri
-MAX_PAGES_TO_TEST = 3  # Limite di sicurezza per il primo test
+MAX_PAGES_TO_TEST = float('inf')  # Nessun limite: elabora tutte le pagine
+
+
+def get_alibaba_embedding(model, image=None, text=None):
+    """Estrae gli embedding dal modello Alibaba AutoModel."""
+    with torch.no_grad():
+        if image is not None and text is not None:
+            emb = model.get_fused_embeddings(texts=[text], images=[image])
+        elif image is not None:
+            emb = model.get_image_embeddings(images=[image])
+        elif text is not None:
+            emb = model.get_text_embeddings(texts=[text])
+        else:
+            raise ValueError("Fornire almeno un'immagine o un testo.")
+            
+        if hasattr(emb, "cpu"):
+            emb = emb.cpu().tolist()
+        elif hasattr(emb, "tolist"):
+            emb = emb.tolist()
+        return emb[0]
+
 
 def main():
     print("Avvio elaborazione multimodale (Immagini PDF)...", flush=True)
 
-    # 1. Inizializzazione Modello Multimodale
-    print("1. Caricamento del modello Alibaba Qwen2-VL (potrebbe richiedere minuti)...", flush=True)
-    # Se questo modello risulta troppo lento, sostituiscilo con: 'jinaai/jina-clip-v1'
-    model_name = 'Alibaba-NLP/gme-Qwen2-VL-2B-Instruct'
+    # 1. Inizializzazione Modello
+    print("1. Caricamento del modello Alibaba Qwen2-VL...", flush=True)
+    model_name = "Alibaba-NLP/gme-Qwen2-VL-2B-Instruct"
     
     try:
-        # trust_remote_code=True è spesso necessario per modelli custom come Qwen
-        embedding_model = SentenceTransformer(model_name, trust_remote_code=True)
+        embedding_model = AutoModel.from_pretrained(
+            model_name,
+            torch_dtype=torch.float32,
+            trust_remote_code=True
+        )
+        print("Modello Alibaba caricato con successo!", flush=True)
     except Exception as e:
         print(f"\nERRORE DI CARICAMENTO MODELLO: {e}")
-        print("Il modello Alibaba richiede librerie aggiuntive o è incompatibile con la CPU attuale.")
-        print("Sostituisci 'model_name' alla riga 27 con 'jinaai/jina-clip-v1' e riprova.")
         return
 
-    # 2. Connessione a ChromaDB (Nuova Collezione)
+    # 2. Connessione a ChromaDB
     print(f"2. Connessione al Vector DB locale ('{CHROMA_PATH}')...", flush=True)
-    client = chromadb.PersistentClient(path=CHROMA_PATH)
-    # Creiamo una collezione separata per non mischiare testo e immagini
+    client = chromadb.Client(Settings(
+        chroma_db_impl="duckdb+parquet",
+        persist_directory=CHROMA_PATH
+    ))
     collection = client.get_or_create_collection(name="multimodal_kb", metadata={"hnsw:space": "cosine"})
 
+    # OPTIMIZATION: Recupero di tutti gli ID già salvati per evitare ricalcoli
+    existing_records = collection.get()
+    existing_ids = set(existing_records["ids"]) if existing_records and "ids" in existing_records else set()
+    print(f"Pagine già presenti nel database: {len(existing_ids)}", flush=True)
+
     # 3. Lettura PDF ed estrazione Immagini
-    print("3. Scansione dei file PDF e conversione in immagini...", flush=True)
+    print("3. Scansione dei file PDF...", flush=True)
+    if not os.path.exists(DATA_PATH):
+        os.makedirs(DATA_PATH)
+        
     pdf_files = [f for f in os.listdir(DATA_PATH) if f.endswith('.pdf')]
     
     if not pdf_files:
-        print(f"Nessun PDF in '{DATA_PATH}'.", flush=True)
+        print(f"Nessun PDF trovato nella cartella '{DATA_PATH}'.", flush=True)
         return
 
     processed_pages = 0
+    skipped_pages = 0
     start_total = time.time()
 
     for filename in pdf_files:
@@ -63,32 +122,35 @@ def main():
         
         for page_num in range(len(pdf_document)):
             if processed_pages >= MAX_PAGES_TO_TEST:
-                print(f"\nRaggiunto il limite di sicurezza di {MAX_PAGES_TO_TEST} pagine.")
                 break
                 
+            page_id = page_num + 1
+            custom_id = f"{filename}_p{page_id}_img"
+
+            # Se la pagina è già nel database, la salta immediatamente
+            if custom_id in existing_ids:
+                skipped_pages += 1
+                continue
+
             page = pdf_document.load_page(page_num)
             
-            # Rendering della pagina in un'immagine (risoluzione ridotta per alleggerire la CPU)
+            # Rendering della pagina in immagine
             pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
             
-            # Preparazione metadati e ID
-            page_id = page_num + 1
-            custom_id = f"{filename}_p{page_id}_img"
             metadata = {"source": filename, "page": page_id, "type": "image"}
             
-            print(f"   Analisi visiva in corso: {filename} - Pagina {page_id}...", flush=True)
+            print(f"   [NUOVA] Analisi visiva in corso: {filename} - Pagina {page_id}...", flush=True)
             
-            # 4. Calcolo Embedding dell'Immagine
+            # 4. Calcolo Embedding
             start_emb = time.time()
-            # Passiamo l'oggetto PIL Image al modello
-            tensor = embedding_model.encode(img, convert_to_tensor=True)
+            vector = get_alibaba_embedding(embedding_model, image=img)
             emb_time = time.time() - start_emb
             
             # 5. Salvataggio in ChromaDB
             collection.upsert(
                 ids=[custom_id],
-                embeddings=[tensor.cpu().tolist()],
+                embeddings=[vector],
                 metadatas=[metadata],
                 documents=[f"Rappresentazione visiva di {filename}, pagina {page_id}"]
             )
@@ -96,9 +158,15 @@ def main():
             print(f"   -> Vettorizzazione completata in {emb_time:.2f} secondi.", flush=True)
             processed_pages += 1
 
+    # Scrittura dei dati su disco
+    if processed_pages > 0:
+        client.persist()
+
     elapsed = time.time() - start_total
-    print(f"\nESITO: Processate {processed_pages} immagini in {elapsed:.2f} s.")
-    print(f"Elementi totali nella collezione 'multimodal_kb': {collection.count()}")
+    print(f"\nESITO FINALE:", flush=True)
+    print(f"- Nuove pagine vettorizzate: {processed_pages} (in {elapsed:.2f} s)", flush=True)
+    print(f"- Pagine già esistenti saltate: {skipped_pages}", flush=True)
+    print(f"- Elementi totali nella collezione 'multimodal_kb': {collection.count()}", flush=True)
 
 if __name__ == "__main__":
     main()

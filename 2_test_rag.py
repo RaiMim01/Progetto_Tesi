@@ -1,27 +1,39 @@
+try:
+    __import__('pysqlite3')
+    import sys
+    sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+except ImportError:
+    pass
+
+import os
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
+
 import warnings
 warnings.filterwarnings("ignore")
 
 print("Avvio dello script in corso...", flush=True)
 
 import chromadb
-import os
+from chromadb.config import Settings
 import torch
 import torch.nn as nn
 from sentence_transformers import SentenceTransformer, CrossEncoder
 from dotenv import load_dotenv 
-from google import genai
+import google.generativeai as genai
+import json
+import urllib.request
+import urllib.error
 
 # CONFIGURAZIONE API LLM GEMINI
 # Cerca e carica automaticamente il file .env
 load_dotenv()
 
 # Recupera la chiave in modo sicuro
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# Sanificazione della chiave API da eventuali virgolette, spazi o newline letti dal file .env
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip().strip('"').strip("'")
 
 if not GEMINI_API_KEY:
     raise ValueError("Nessuna chiave trovata. Controlla il file .env!")
-
-ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
 # Configurazione parametri per ChromaDB
 CHROMA_PATH = "vector_db"
@@ -30,10 +42,15 @@ COLLECTION_NAME = "knowledge_base"
 def main():
     # FASE 1: TEST RICERCA SEMANTICA (RETRIEVER)
 
-    # 1. Connessione a ChromaDB in sola lettura
+    # 1. Connessione a ChromaDB in sola lettura (Sintassi nativa ChromaDB 0.3.29)
     print(f"1. Connessione al database vettoriale in '{CHROMA_PATH}'...", flush=True)
-    client = chromadb.PersistentClient(path=CHROMA_PATH)
-    
+
+    client = chromadb.Client(Settings(
+        chroma_db_impl="duckdb+parquet",
+        persist_directory=CHROMA_PATH,
+        anonymized_telemetry=False
+    ))
+
     try:
         collection = client.get_collection(name=COLLECTION_NAME)
     except Exception as e:
@@ -76,7 +93,7 @@ def main():
     print("6. Calcolo attenzione incrociata (Cross-Attention)...", flush=True)
     scores_tensor = reranker.predict(
         query_doc_pairs,
-        activation_fn=nn.Sigmoid(),  # Applica la sigmoide per normalizzare i punteggi tra 0 e 1
+        activation_fct=nn.Sigmoid(),  # Applica la sigmoide per normalizzare i punteggi tra 0 e 1
         convert_to_tensor=True,      # Mantiene l'output come Tensore PyTorch
         batch_size=8                 # Un batch_size contenuto
     )
@@ -112,7 +129,7 @@ def main():
         page = item['metadata'].get('page', 'Sconosciuta')
         chunk_id = item['chunk_id']
         text = item['doc']
-        formatted_context += f"--- DOCUMENTO {idx} (ID Chunk: {chunk_id} | Fonte: {source} - Pag: {page}) ---\n{text}\n\n"
+        formatted_context += f"--- DOCUMENTO {idx} (ID Chunk: {chunk_id} | Fonte: {source} | Pag: {page}) ---\n{text}\n\n"
 
     # Ingegneria del Prompt (Prompt Engineering)
     prompt = f"""Sei un orientatore universitario rigoroso, preciso ed esaustivo.
@@ -135,20 +152,37 @@ def main():
     RISPOSTA:"""
 
     print("8. Invio richiesta a Gemini 3.6 Flash (Attendere...)", flush=True)
+
+    # Chiamata HTTP diretta all'endpoint REST ufficiale di Gemini 1.5 Flash
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={GEMINI_API_KEY}"
     
-    # Generazione risposta impostando la 'temperature' a 0.1 per azzerare le allucinazioni
-    response = ai_client.models.generate_content(
-        model='gemini-3.6-flash',
-        contents=prompt,
-        config=genai.types.GenerateContentConfig(
-            temperature=0.1
-        )
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.1}
+    }
+
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"}
     )
+
+    try:
+        with urllib.request.urlopen(req) as resp:
+            res_data = json.loads(resp.read().decode("utf-8"))
+            answer_text = res_data['candidates'][0]['content']['parts'][0]['text']
+    except urllib.error.HTTPError as err:
+        error_body = err.read().decode('utf-8')
+        print(f"\nERRORE HTTP {err.code}: {err.reason}\nDettaglio errore da Google API:\n{error_body}")
+        return
+    except Exception as err:
+        print(f"\nERRORE nella chiamata API a Gemini: {err}")
+        return
 
     print("\n=========================================================")
     print("🤖 RISPOSTA GENERATA DALL'IA:")
     print("=========================================================")
-    print(response.text)
+    print(answer_text)
     print("=========================================================\n")
 
 if __name__ == "__main__":

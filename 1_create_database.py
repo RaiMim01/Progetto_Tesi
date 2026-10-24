@@ -1,3 +1,13 @@
+try:
+    __import__('pysqlite3')
+    import sys
+    sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+except ImportError:
+    pass
+
+import os
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
+
 import os
 import sys
 import re
@@ -9,6 +19,7 @@ warnings.filterwarnings("ignore")
 print("Avvio dello script in corso...", flush=True)
 
 import chromadb
+from chromadb.config import Settings
 from langchain_community.document_loaders import PyPDFDirectoryLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from sentence_transformers import SentenceTransformer
@@ -18,11 +29,14 @@ print("Librerie caricate con successo! Inizio lettura cartella...", flush=True)
 # Configurazione percorsi e parametri
 DATA_PATH = "documents"
 CHROMA_PATH = "vector_db"
-BATCH_SIZE = 100 
+BATCH_SIZE = 32 
 
 def main():
     # 1. Caricamento dei PDF tramite pypdf
     print("1. Lettura dei file PDF dalla cartella...", flush=True)
+    if not os.path.exists(DATA_PATH):
+        os.makedirs(DATA_PATH)
+
     loader = PyPDFDirectoryLoader(DATA_PATH)
     documents = loader.load()
 
@@ -82,7 +96,12 @@ def main():
 
     # 4. Inizializzazione Vector Database Locale (ChromaDB)
     print(f"5. Connessione al Vector DB locale ('{CHROMA_PATH}')...", flush=True)
-    client = chromadb.PersistentClient(path=CHROMA_PATH)
+    client = chromadb.Client(Settings(
+        chroma_db_impl="duckdb+parquet",
+        persist_directory=CHROMA_PATH,
+        anonymized_telemetry=False
+    ))
+    
     # creazione della collection "knowledge_base" con metadati per la Cosine Similarity 
     collection = client.get_or_create_collection(name="knowledge_base", metadata={"hnsw:space": "cosine"})
 
