@@ -155,16 +155,16 @@ def run_multimodal_pipeline(user_query: str):
 
     # 3. Costruzione Prompt per Gemini
     prompt_text = f"""Ciao! Sei un assistente universitario esperto e preciso.
-Guarda attentamente le immagini fornite e rispondi alla domanda dello studente basandoti ESCLUSIVAMENTE sulle informazioni, tabelle o schemi presenti in esse.
+    Guarda attentamente le immagini fornite e rispondi alla domanda dello studente basandoti ESCLUSIVAMENTE sulle informazioni, tabelle o schemi presenti in esse.
 
-REGOLE:
-1. Cita sempre la fonte specifica per ogni affermazione [Fonte: NOME_FILE, Pagina X].
-2. Se l'informazione non è visibile nelle immagini, dichiara che i documenti forniti non contengono la risposta.
+    REGOLE:
+    1. Cita sempre la fonte specifica per ogni affermazione [Fonte: NOME_FILE, Pagina X].
+    2. Se l'informazione non è visibile nelle immagini, dichiara che i documenti forniti non contengono la risposta.
 
-DOMANDA DELLO STUDENTE:
-{user_query}
+    DOMANDA DELLO STUDENTE:
+    {user_query}
 
-RISPOSTA:"""
+    RISPOSTA:"""
 
     gemini_parts.insert(0, {"text": prompt_text})
 
@@ -202,62 +202,153 @@ RISPOSTA:"""
     return answer_text, top_sources
 
 # ==========================================
-# 5. FRONTEND STREAMLIT
+# 5. FRONTEND STREAMLIT (INTERFACCIA MULTIMODALE)
 # ==========================================
+
+# --- Sidebar Informativa ---
 with st.sidebar:
     st.title("📚 Info Progetto")
     st.markdown("""
     Ciao! 👋 Questo è il mio progetto di tesi. 
-    Ho creato un assistente che **"guarda" le pagine PDF** (grafici, tabelle e piani di studio) per fornirti risposte contestualizzate!
+    Ho creato un assistente che **"guarda" le pagine PDF** (grafici, tabelle e piani di studio) e raccomanda pagine con strutture o contenuti correlati!
     """)
     st.divider()
+    
     st.subheader("Architettura 🛠️")
     st.markdown("""
     * **Embedding Visivo/Testo:** Alibaba Qwen2-VL
     * **Vector DB:** ChromaDB (`multimodal_kb`)
-    * **LLM Multimodale:** Gemini 3.5 Flash
+    * **LLM Multimodale:** Gemini 1.5 Flash
+    * **Recommender:** Similarità Coseno Visiva
     """)
     st.divider()
+    
     if st.button("🧹 Pulisci la chat"):
         st.session_state.messages = []
         st.rerun()
 
 st.title("👩‍🎓 Il tuo tutor universitario AI (Multimodale)")
-st.caption("Chiedimi pure informazioni su corsi, regolamenti o sbocchi lavorativi!")
 
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+# --- Creazione delle Schede (Tabs) dell'Interfaccia ---
+tab_chat, tab_rec = st.tabs(["💬 Assistente Multimodale", "🖼️ Recommender Visivo Pagine PDF"])
 
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-        if "sources" in message and message["sources"]:
-            with st.expander("🖼️ Visualizza le pagine consultate"):
-                cols = st.columns(len(message["sources"]))
-                for idx, src in enumerate(message["sources"]):
-                    with cols[idx]:
-                        st.image(base64.b64decode(src['b64']), caption=f"{src['file']} (Pag. {src['page']})", use_column_width=True)
+# --------------------------------------------------
+# TAB 1: CHATBOT MULTIMODALE CON GEMINI 1.5 FLASH
+# --------------------------------------------------
+with tab_chat:
+    st.caption("Chiedimi pure informazioni su corsi, regolamenti o sbocchi lavorativi!")
 
-if user_input := st.chat_input("Es: Quali sono gli sbocchi occupazionali previsti?"):
-    st.session_state.messages.append({"role": "user", "content": user_input})
-    with st.chat_message("user"):
-        st.markdown(user_input)
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
 
-    with st.chat_message("assistant"):
-        with st.spinner("Sto consultando le pagine dei documenti visivi... 🔍"):
-            answer, sources = run_multimodal_pipeline(user_input)
-            
-            st.markdown(answer)
-            
-            if sources:
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+            if "sources" in message and message["sources"]:
                 with st.expander("🖼️ Visualizza le pagine consultate"):
-                    cols = st.columns(len(sources))
-                    for idx, src in enumerate(sources):
+                    cols = st.columns(len(message["sources"]))
+                    for idx, src in enumerate(message["sources"]):
                         with cols[idx]:
-                            st.image(base64.b64decode(src['b64']), caption=f"{src['file']} (Pag. {src['page']})", use_container_width=True)
+                            st.image(
+                                base64.b64decode(src['b64']), 
+                                caption=f"{src['file']} (Pag. {src['page']})", 
+                                use_container_width=True
+                            )
 
-    st.session_state.messages.append({
-        "role": "assistant",
-        "content": answer,
-        "sources": sources
-    })
+    if user_input := st.chat_input("Es: Quali sono gli sbocchi occupazionali previsti?"):
+        st.session_state.messages.append({"role": "user", "content": user_input})
+        with st.chat_message("user"):
+            st.markdown(user_input)
+
+        with st.chat_message("assistant"):
+            with st.spinner("Sto consultando le pagine dei documenti visivi... 🔍"):
+                answer, sources = run_multimodal_pipeline(user_input)
+                st.markdown(answer)
+                
+                if sources:
+                    with st.expander("🖼️ Visualizza le pagine consultate"):
+                        cols = st.columns(len(sources))
+                        for idx, src in enumerate(sources):
+                            with cols[idx]:
+                                st.image(
+                                    base64.b64decode(src['b64']), 
+                                    caption=f"{src['file']} (Pag. {src['page']})", 
+                                    use_container_width=True
+                                )
+
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": answer,
+            "sources": sources
+        })
+
+# --------------------------------------------------
+# TAB 2: RECOMMENDER SYSTEM VISIVO-STRUTTURALE
+# --------------------------------------------------
+with tab_rec:
+    st.subheader("🖼️ Raccomandazione Visivo-Strutturale delle Pagine PDF")
+    st.caption("Seleziona una pagina PDF dal database per visualizzare le 3 pagine visivamente e concettualmente più vicine.")
+
+    all_pages = db_collection.get(include=["metadatas"])
+    
+    if not all_pages["ids"]:
+        st.warning("Il database multimodale è vuoto! Esegui prima '3_create_database_multimodal.py'.")
+    else:
+        options_map = {}
+        for page_id, meta in zip(all_pages["ids"], all_pages["metadatas"]):
+            label = f"{meta.get('source', 'N/D')} — Pagina {meta.get('page', 'N/D')}"
+            options_map[label] = (page_id, meta.get('source'), meta.get('page'))
+
+        selected_label = st.selectbox("Seleziona una pagina PDF di partenza:", list(options_map.keys()))
+        selected_id, selected_file, selected_page_num = options_map[selected_label]
+
+        if st.button("🔎 Cerca Pagine PDF Correlate", type="primary"):
+            try:
+                target_b64 = extract_image_from_pdf(selected_file, selected_page_num)
+                
+                st.markdown("#### 🎯 Pagina Selezionata")
+                st.image(
+                    base64.b64decode(target_b64), 
+                    caption=f"TARGET: {selected_file} (Pag. {selected_page_num})", 
+                    width=300
+                )
+                st.divider()
+            except Exception as e:
+                st.error(f"Impossibile caricare l'immagine target: {e}")
+
+            target_record = db_collection.get(ids=[selected_id], include=["embeddings"])
+            target_vector = target_record["embeddings"][0]
+
+            results = db_collection.query(
+                query_embeddings=[target_vector],
+                n_results=4,
+                include=["metadatas", "distances"]
+            )
+
+            st.markdown("### 🖼️ Pagine PDF Raccomandate")
+            cols = st.columns(3)
+            rec_idx = 0
+
+            for meta, dist, rec_id in zip(results['metadatas'][0], results['distances'][0], results['ids'][0]):
+                if rec_id == selected_id:
+                    continue
+
+                rec_file = meta.get('source')
+                rec_page = meta.get('page')
+
+                with cols[rec_idx]:
+                    st.markdown(f"##### Raccomandazione #{rec_idx + 1}")
+                    st.metric(label="Distanza Coseno", value=f"{dist:.4f}")
+                    st.caption(f"**File:** `{rec_file}` (Pag. {rec_page})")
+                    
+                    try:
+                        rec_b64 = extract_image_from_pdf(rec_file, rec_page)
+                        st.image(
+                            base64.b64decode(rec_b64), 
+                            caption=f"{rec_file} - Pag. {rec_page}", 
+                            use_container_width=True
+                        )
+                    except Exception as e:
+                        st.error(f"Errore caricamento immagine: {e}")
+                        
+                rec_idx += 1

@@ -119,21 +119,21 @@ def run_rag_pipeline(user_query: str):
         formatted_context += f"--- DOCUMENTO {idx} (ID Chunk: {chunk_id} | Fonte: {source} | Pag: {page}) ---\n{text}\n\n"
 
     prompt = f"""Sei un orientatore universitario rigoroso, preciso ed esaustivo.
-Il tuo compito è rispondere alla domanda dell'utente basandoti ESCLUSIVAMENTE sui documenti forniti nel CONTESTO sottostante.
+    Il tuo compito è rispondere alla domanda dell'utente basandoti ESCLUSIVAMENTE sui documenti forniti nel CONTESTO sottostante.
 
-REGOLE TASSATIVE DI RISPOSTA:
-1. FEDELTÀ TESTUALE ASSOLUTA: Utilizza ESATTAMENTE i nomi delle figure professionali e dei settori presenti nel testo. NON inventare, sintetizzare con sinonimi o parafrasare i titoli.
-2. NESSUNA ALLUCINAZIONE: Se un'informazione non è esplicitamente citata nei documenti, NON includerla per alcun motivo.
-3. CITAZIONE FONTI: Alla fine di OGNI concetto o ruolo riportato, inserisci la citazione esatta usando il file e la pagina indicati. Formato obbligatorio: [Fonte: NOME_FILE, Pag. X]
-4. STRUTTURA: Presenta i ruoli e gli sbocchi in un elenco puntato chiaro e descrittivo.
+    REGOLE TASSATIVE DI RISPOSTA:
+    1. FEDELTÀ TESTUALE ASSOLUTA: Utilizza ESATTAMENTE i nomi delle figure professionali e dei settori presenti nel testo. NON inventare, sintetizzare con sinonimi o parafrasare i titoli.
+    2. NESSUNA ALLUCINAZIONE: Se un'informazione non è esplicitamente citata nei documenti, NON includerla per alcun motivo.
+    3. CITAZIONE FONTI: Alla fine di OGNI concetto o ruolo riportato, inserisci la citazione esatta usando il file e la pagina indicati. Formato obbligatorio: [Fonte: NOME_FILE, Pag. X]
+    4. STRUTTURA: Presenta i ruoli e gli sbocchi in un elenco puntato chiaro e descrittivo.
 
-CONTESTO DEI DOCUMENTI ESTRATTI:
-{formatted_context}
+    CONTESTO DEI DOCUMENTI ESTRATTI:
+    {formatted_context}
 
-DOMANDA DELL'UTENTE:
-{user_query}
+    DOMANDA DELL'UTENTE:
+    {user_query}
 
-RISPOSTA:"""
+    RISPOSTA:"""
 
     # Chiamata API REST con retry per sovraccarichi temporanei
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={gemini_api_key}"
@@ -173,68 +173,136 @@ RISPOSTA:"""
 # 4. INTERFACCIA UTENTE (STREAMLIT FRONTEND)
 # ==========================================
 
-# Sidebar Informativa
+# --- Sidebar Informativa ---
 with st.sidebar:
     st.title("🎓 DocFlow AI")
-    st.subheader("Architettura RAG")
+    st.subheader("Architettura RAG & Recommender")
     st.markdown("""
     **Specifiche di Sistema:**
     * **Embedding:** `paraphrase-multilingual-MiniLM-L12-v2`
-    * **Vector DB:** ChromaDB 0.3.29 (DuckDB + Parquet)
+    * **Vector DB:** ChromaDB (`knowledge_base`)
     * **Re-ranker:** Cross-Encoder PyTorch (`mMiniLMv2-L12`)
-    * **Sintesi:** Gemini Flash REST API (`temp=0.1`)
+    * **Recommender:** Similarità Coseno nativa su DB
     """)
     st.divider()
+    # Pulsante per resettare la cronologia della chat
     if st.button("🗑️ Cancella Cronologia Chat"):
         st.session_state.messages = []
         st.rerun()
 
-# Titolo Principale
+# --- Titolo Principale ---
 st.title("🏛️ Assistente Virtuale Documenti Universitari")
-st.caption("Sistema locale RAG con pipeline a due stadi (Bi-Encoder + Cross-Encoder PyTorch)")
 
-# Inizializzazione della cronologia messaggi in session_state
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+# --- Creazione delle Schede (Tabs) dell'Interfaccia ---
+tab_chat, tab_rec = st.tabs(["💬 Assistente RAG", "🔍 Recommender System (Testo)"])
 
-# Mostra i messaggi della cronologia
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-        if "sources" in message:
-            with st.expander("📚 Visualizza Fonti ed Evidenze Re-ranking"):
-                for idx, src in enumerate(message["sources"], start=1):
-                    st.write(f"**[{idx}] {src['metadata'].get('source', 'N/D')}** — Pagina {src['metadata'].get('page', 'N/D')}")
-                    st.caption(f"Score Cross-Encoder: `{src['rerank_score']:.4f}` | Posizione Originale DB: `#{src['original_rank']}`")
-                    st.text(src['doc'][:250] + "...")
-                    st.divider()
+# --------------------------------------------------
+# TAB 1: CHATBOT RAG CON RE-RANKING PYTORCH
+# --------------------------------------------------
+with tab_chat:
+    st.caption("Sistema locale RAG con pipeline a due stadi (Bi-Encoder + Cross-Encoder PyTorch)")
 
-# Input dell'utente
-if user_input := st.chat_input("Fai una domanda sui regolamenti o sui corsi di studio..."):
-    # Mostra la domanda dell'utente
-    st.session_state.messages.append({"role": "user", "content": user_input})
-    with st.chat_message("user"):
-        st.markdown(user_input)
+    # Inizializzazione della cronologia messaggi in session_state se non presente
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
 
-    # Elaborazione della risposta
-    with st.chat_message("assistant"):
-        with st.spinner("🔍 Ricerca semantica su ChromaDB e Re-ranking PyTorch in corso..."):
-            answer, top_sources = run_rag_pipeline(user_input)
+    # Rendering della cronologia dei messaggi precedentemente inviati
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+            if "sources" in message:
+                with st.expander("📚 Visualizza Fonti ed Evidenze Re-ranking"):
+                    for idx, src in enumerate(message["sources"], start=1):
+                        st.write(f"**[{idx}] {src['metadata'].get('source', 'N/D')}** — Pagina {src['metadata'].get('page', 'N/D')}")
+                        st.caption(f"Score Cross-Encoder: `{src['rerank_score']:.4f}` | Posizione Originale DB: `#{src['original_rank']}`")
+                        st.text(src['doc'][:250] + "...")
+                        st.divider()
+
+    # Input utente e gestione del flusso di richiesta/risposta
+    if user_input := st.chat_input("Fai una domanda sui regolamenti o sui corsi di studio..."):
+        # 1. Registrazione e visualizzazione della domanda dell'utente
+        st.session_state.messages.append({"role": "user", "content": user_input})
+        with st.chat_message("user"):
+            st.markdown(user_input)
+
+        # 2. Elaborazione ed esecuzione della pipeline RAG a due stadi
+        with st.chat_message("assistant"):
+            with st.spinner("🔍 Ricerca semantica su ChromaDB e Re-ranking PyTorch in corso..."):
+                answer, top_sources = run_rag_pipeline(user_input)
+                
+                # Visualizzazione della risposta generata dall'LLM
+                st.markdown(answer)
+                
+                # Visualizzazione espandibile con l'evidenza delle fonti e del re-ranking
+                with st.expander("📚 Visualizza Fonti ed Evidenze Re-ranking"):
+                    for idx, src in enumerate(top_sources, start=1):
+                        st.write(f"**[{idx}] {src['metadata'].get('source', 'N/D')}** — Pagina {src['metadata'].get('page', 'N/D')}")
+                        st.caption(f"Score Cross-Encoder: `{src['rerank_score']:.4f}` | Posizione Originale DB: `#{src['original_rank']}`")
+                        st.text(src['doc'][:250] + "...")
+                        st.divider()
+
+        # 3. Salvataggio della risposta e delle relative fonti nello stato della sessione
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": answer,
+            "sources": top_sources
+        })
+
+# --------------------------------------------------
+# TAB 2: RECOMMENDER SYSTEM TESTUALE (CONTENT-BASED)
+# --------------------------------------------------
+with tab_rec:
+    st.subheader("🔗 Esplorazione e Raccomandazione Documentale")
+    st.caption("Seleziona un frammento di testo per trovare i 3 contenuti più simili presenti nel database vettoriale.")
+
+    # 1. Recupero di tutti i chunk di testo censiti nel DB vettoriale
+    all_docs = collection.get(include=["metadatas", "documents"])
+    
+    if not all_docs["ids"]:
+        st.warning("Il database vettoriale è vuoto! Esegui prima lo script '1_create_database.py'.")
+    else:
+        # Creazione di un dizionario per popolare il menu a tendina (Etichetta leggibile -> ID record DB)
+        options_map = {}
+        for doc_id, meta, text in zip(all_docs["ids"], all_docs["metadatas"], all_docs["documents"]):
+            label = f"{meta.get('source', 'N/D')} (Pag. {meta.get('page', 'N/D')}) - {text[:60]}..."
+            options_map[label] = doc_id
+
+        # Menu a tendina per selezionare il chunk target di partenza
+        selected_label = st.selectbox("Seleziona un documento/chunk di partenza:", list(options_map.keys()))
+        selected_id = options_map[selected_label]
+
+        # Avvio del calcolo delle raccomandazioni al click sul pulsante
+        if st.button("🔍 Trova Documenti Correlati", type="primary"):
+            # 2. Recupero dell'embedding vettoriale già calcolato e salvato nel DB
+            target_record = collection.get(ids=[selected_id], include=["embeddings", "documents", "metadatas"])
+            target_vector = target_record["embeddings"][0]
             
-            # Mostra testo risposta
-            st.markdown(answer)
-            
-            # Mostra le fonti dentro una sezione espandibile
-            with st.expander("📚 Visualizza Fonti ed Evidenze Re-ranking"):
-                for idx, src in enumerate(top_sources, start=1):
-                    st.write(f"**[{idx}] {src['metadata'].get('source', 'N/D')}** — Pagina {src['metadata'].get('page', 'N/D')}")
-                    st.caption(f"Score Cross-Encoder: `{src['rerank_score']:.4f}` | Posizione Originale DB: `#{src['original_rank']}`")
-                    st.text(src['doc'][:250] + "...")
-                    st.divider()
+            # Anteprima visiva del documento target selezionato dall'utente
+            st.info(f"**Documento Selezionato:** {target_record['metadatas'][0].get('source')} (Pagina {target_record['metadatas'][0].get('page')})\n\n_{target_record['documents'][0]}_")
+            st.divider()
 
-    # Salva la risposta e le fonti in session_state
-    st.session_state.messages.append({
-        "role": "assistant",
-        "content": answer,
-        "sources": top_sources
-    })
+            # 3. Query vettoriale per similarità coseno su ChromaDB (n_results=4 per poter escludere il documento stesso)
+            results = collection.query(
+                query_embeddings=[target_vector],
+                n_results=4,
+                include=["documents", "metadatas", "distances"]
+            )
+
+            # 4. Rendering delle 3 schede raccomandate distribuite su 3 colonne affiancate
+            st.markdown("### 📄 Documenti Raccomandati")
+            cols = st.columns(3)
+            rec_idx = 0
+            
+            for doc, meta, dist, rec_id in zip(results['documents'][0], results['metadatas'][0], results['distances'][0], results['ids'][0]):
+                # Esclusione del documento target dai risultati della raccomandazione
+                if rec_id == selected_id:
+                    continue 
+                
+                with cols[rec_idx]:
+                    st.markdown(f"##### Raccomandazione #{rec_idx + 1}")
+                    st.write(f"**Fonte:** {meta.get('source', 'N/D')}")
+                    st.write(f"**Pagina:** {meta.get('page', 'N/D')}")
+                    st.metric(label="Distanza Coseno", value=f"{dist:.4f}")
+                    st.caption(f"**ID Chunk:** `{rec_id}`")
+                    st.text_area("Estratto testo:", value=doc, height=180, disabled=True, key=f"rec_txt_{rec_id}")
+                rec_idx += 1
