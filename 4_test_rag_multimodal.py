@@ -1,36 +1,10 @@
-try:
-    __import__('pysqlite3')
-    import sys
-    sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
-except ImportError:
-    pass
-
 import os
 import time
-import warnings
 import base64
-warnings.filterwarnings("ignore")
+import jetson_patches
 
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-
-import typing
-
-# 1. Patch ForwardRef per compatibilità Python 3.8
-if not hasattr(typing.ForwardRef, '__annotations__'):
-    typing.ForwardRef.__annotations__ = property(lambda self: {})
-
-from transformers.image_processing_utils import BaseImageProcessor
-
-# 2. Patch su __call__ di BaseImageProcessor
-_orig_image_call = BaseImageProcessor.__call__
-
-def _patched_image_call(self, images=None, **kwargs):
-    for text_param in ["padding", "max_length", "stride", "truncation", "pad_to_multiple_of"]:
-        kwargs.pop(text_param, None)
-    return _orig_image_call(self, images=images, **kwargs)
-
-BaseImageProcessor.__call__ = _patched_image_call
 
 print("Avvio dello script RAG Multimodale...", flush=True)
 

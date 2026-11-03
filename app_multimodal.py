@@ -1,6 +1,12 @@
+import os
+import warnings
+warnings.filterwarnings("ignore")
+
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 # ==========================================
 # PATCH PER PYTHON 3.8 SULLA JETSON NANO
-# Deve stare in cima allo script!
 # ==========================================
 import typing
 if not hasattr(typing.ForwardRef, '__annotations__'):
@@ -13,23 +19,6 @@ def _patched_image_call(self, images=None, **kwargs):
         kwargs.pop(text_param, None)
     return _orig_image_call(self, images=images, **kwargs)
 BaseImageProcessor.__call__ = _patched_image_call
-
-# ==========================================
-# IMPORT LIBRERIE
-# ==========================================
-try:
-    __import__('pysqlite3')
-    import sys
-    sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
-except ImportError:
-    pass
-
-import os
-os.environ["ANONYMIZED_TELEMETRY"] = "False"
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
-
-import warnings
-warnings.filterwarnings("ignore")
 
 import json
 import time

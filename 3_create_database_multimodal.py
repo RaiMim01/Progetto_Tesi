@@ -1,55 +1,29 @@
-try:
-    __import__('pysqlite3')
-    import sys
-    sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
-except ImportError:
-    pass
-
 import os
 import sys
-import typing
-
-# 1. Patch ForwardRef per compatibilità Python 3.8
-if not hasattr(typing.ForwardRef, '__annotations__'):
-    typing.ForwardRef.__annotations__ = property(lambda self: {})
-
 import time
-import warnings
-from PIL import Image
-warnings.filterwarnings("ignore")
+import jetson_patches
 
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
-os.environ["TOKENIZERS_PARALLELISM"] = "false"  # Disabilita gli avvisi del tokenizer
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+# Disabilita gli avvisi del tokenizer  
 
 print("Avvio dello script in corso...", flush=True)
 
 import chromadb
 from chromadb.config import Settings
+from PIL import Image
 import pymupdf as fitz  # PyMuPDF
 import torch
 from transformers import AutoModel
-from transformers.image_processing_utils import BaseImageProcessor
 
-# 2. Patch su __call__ di BaseImageProcessor
-_orig_image_call = BaseImageProcessor.__call__
-
-def _patched_image_call(self, images=None, **kwargs):
-    for text_param in ["padding", "max_length", "stride", "truncation", "pad_to_multiple_of"]:
-        kwargs.pop(text_param, None)
-    return _orig_image_call(self, images=images, **kwargs)
-
-BaseImageProcessor.__call__ = _patched_image_call
-
-# ==========================================
-# CONFIGURAZIONE PARAMETRI MULTIMODALI
-# ==========================================
+# Configurazione parametri
 DATA_PATH = "documents"
 CHROMA_PATH = "vector_db"
 MAX_PAGES_TO_TEST = float('inf')  # Nessun limite: elabora tutte le pagine
 
 
 def get_alibaba_embedding(model, image=None, text=None):
-    """Estrae gli embedding dal modello Alibaba AutoModel."""
+    """Estrae gli embedding dal modello Alibaba Qwen2-VL a seconda dell'oggetto passato."""
     with torch.no_grad():
         if image is not None and text is not None:
             emb = model.get_fused_embeddings(texts=[text], images=[image])
@@ -68,7 +42,7 @@ def get_alibaba_embedding(model, image=None, text=None):
 
 
 def main():
-    print("Avvio elaborazione multimodale (Immagini PDF)...", flush=True)
+    print("Avvio elaborazione multimodale...", flush=True)
 
     # 1. Inizializzazione Modello
     print("1. Caricamento del modello Alibaba Qwen2-VL...", flush=True)
@@ -82,7 +56,7 @@ def main():
         )
         print("Modello Alibaba caricato con successo!", flush=True)
     except Exception as e:
-        print(f"\nERRORE DI CARICAMENTO MODELLO: {e}")
+        print(f"\nErrore di caricamento modello: {e}")
         return
 
     # 2. Connessione a ChromaDB
@@ -93,7 +67,7 @@ def main():
     ))
     collection = client.get_or_create_collection(name="multimodal_kb", metadata={"hnsw:space": "cosine"})
 
-    # OPTIMIZATION: Recupero di tutti gli ID già salvati per evitare ricalcoli
+    # Ottimizzazione: Recupero di tutti gli ID già salvati per evitare ricalcoli
     existing_records = collection.get()
     existing_ids = set(existing_records["ids"]) if existing_records and "ids" in existing_records else set()
     print(f"Pagine già presenti nel database: {len(existing_ids)}", flush=True)
@@ -127,20 +101,23 @@ def main():
             page_id = page_num + 1
             custom_id = f"{filename}_p{page_id}_img"
 
-            # Se la pagina è già nel database, la salta immediatamente
+            # Se la pagina è già nel database la salta
             if custom_id in existing_ids:
                 skipped_pages += 1
                 continue
-
+            
+            # Estrae e carica la pagina in memoria
             page = pdf_document.load_page(page_num)
             
             # Rendering della pagina in immagine
+            # Converte la pagina pdf in un immagine con i pixel aumentati per una migliore qualità
             pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
+            # Converte i pixel in un oggetto PIL Image
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
             
             metadata = {"source": filename, "page": page_id, "type": "image"}
             
-            print(f"   [NUOVA] Analisi visiva in corso: {filename} - Pagina {page_id}...", flush=True)
+            print(f"  [NUOVA] Analisi visiva in corso: {filename} - Pagina {page_id}...", flush=True)
             
             # 4. Calcolo Embedding
             start_emb = time.time()
@@ -155,7 +132,7 @@ def main():
                 documents=[f"Rappresentazione visiva di {filename}, pagina {page_id}"]
             )
             
-            print(f"   -> Vettorizzazione completata in {emb_time:.2f} secondi.", flush=True)
+            print(f"  -> Vettorizzazione completata in {emb_time:.2f} secondi.", flush=True)
             processed_pages += 1
 
     # Scrittura dei dati su disco

@@ -1,13 +1,3 @@
-try:
-    __import__('pysqlite3')
-    import sys
-    sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
-except ImportError:
-    pass
-
-import os
-os.environ["ANONYMIZED_TELEMETRY"] = "False"
-
 import os
 import sys
 import re
@@ -15,6 +5,8 @@ import hashlib
 import time
 import warnings
 warnings.filterwarnings("ignore")
+
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
 
 print("Avvio dello script in corso...", flush=True)
 
