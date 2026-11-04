@@ -2,6 +2,7 @@ import os
 import warnings
 warnings.filterwarnings("ignore")
 
+# Disabilita l'invio anonimo di dati di utilizzo da parte di ChromaDB
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
 
 import chromadb
@@ -11,7 +12,7 @@ CHROMA_PATH = "vector_db"
 COLLECTION_NAME = "knowledge_base"
 
 def main():
-    print("=== TEST RECOMMENDER SYSTEM (TESTO) ===", flush=True)
+    print("TEST RECOMMENDER SYSTEM (Modello Testuale) ===", flush=True)
     
     # 1. Connessione a ChromaDB
     client = chromadb.Client(Settings(
@@ -27,6 +28,12 @@ def main():
         return
 
     # 2. Selezione di un elemento di prova dal database
+    # collection.get(...): Recupera i record memorizzati nel database
+    # limit=1 (int): Chiede a ChromaDB di estrarre un solo elemento 
+    # include=[...] (list[str]): Forza ChromaDB a restituire non solo gli ID, 
+    # ma anche i testi originali ("documents"), le informazioni descrittive ("metadatas") 
+    # e i vettori matematici memorizzati ("embeddings")
+    # all_records (dict): Dizionario contenente i risultati estratti sotto forma di liste parallele
     all_records = collection.get(limit=1, include=["documents", "metadatas", "embeddings"])
     if not all_records["ids"]:
         print("Il database è vuoto. Popolalo prima con '1_create_database.py'.")
@@ -44,17 +51,18 @@ def main():
 
     # 3. Ricerca dei 3 elementi più simili tramite Similarità Coseno
     # Chiediamo 4 risultati perché il primo sarà il documento target stesso
+    # collection.query(...): Esegue la ricerca k-NN (k-Nearest Neighbors) nello spazio vettoriale
     results = collection.query(
         query_embeddings=[target_vector],
         n_results=4,
         include=["documents", "metadatas", "distances"]
     )
 
-    print("=========================================================")
-    print("🔍 RACCOMANDAZIONI (Documenti più simili trovati):")
-    print("=========================================================")
-
+    print("RACCOMANDAZIONI (Documenti più simili trovati):")
+   
     rec_count = 1
+    # zip(...): Funzione integrata di Python che prende più liste (testi, metadati, distanze e ID) 
+    # e le "accoppia" elemento per elemento ad ogni iterazione del ciclo for.
     for doc, meta, dist, chunk_id in zip(
         results['documents'][0], 
         results['metadatas'][0], 

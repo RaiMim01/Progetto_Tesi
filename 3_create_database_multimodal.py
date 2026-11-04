@@ -136,6 +136,7 @@ def main():
             processed_pages += 1
 
     # Scrittura dei dati su disco
+    # upsert() salva i dati in ram, persist() li scrive su disco
     if processed_pages > 0:
         client.persist()
 
