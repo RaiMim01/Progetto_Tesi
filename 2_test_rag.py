@@ -2,6 +2,7 @@ import os
 import warnings
 warnings.filterwarnings("ignore")
 
+# Disabilita l'invio anonimo di dati di utilizzo da parte di ChromaDB
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
 
 print("Avvio dello script in corso...", flush=True)
@@ -146,37 +147,44 @@ def main():
 
     print("8. Invio richiesta a Gemini 3.6 Flash (Attendere...)", flush=True)
 
-    # Chiamata HTTP diretta all'endpoint REST ufficiale di Gemini 1.5 Flash
+    # Chiamata HTTP diretta all'endpoint REST ufficiale di Gemini 3.5 Flash
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={GEMINI_API_KEY}"
     
+    # Definizione del payload JSON (dizionario) richiesto per la chiamata all'API di Gemini
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"temperature": 0.1}
     }
 
+    # Preparazione della richiesta HTTP con url, payload e headers (che specifica il tipo di chiamata json)
     req = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json"}
     )
 
+    # Invio della richiesta a Gemini e gestione della risposta
     try:
+        # urlopen() invia la richiesta HTTP POST
+        # read().decode() legge la risposta e la coverte da byte a stringa formato JSON
+        # json.loads() converte la stringa JSON in un dizionario Python
+        # La risposta contiene la risposta generata da Gemini, che viene estratta dal dizionario e stampata 
         with urllib.request.urlopen(req) as resp:
             res_data = json.loads(resp.read().decode("utf-8"))
             answer_text = res_data['candidates'][0]['content']['parts'][0]['text']
+    
+    # Il primo livello gestisce gli errori delle API HTTP
     except urllib.error.HTTPError as err:
         error_body = err.read().decode('utf-8')
         print(f"\nERRORE HTTP {err.code}: {err.reason}\nDettaglio errore da Google API:\n{error_body}")
         return
+    # Il secondo livello gestisce gli altri errori che non vengono catturati nel primo livello
     except Exception as err:
         print(f"\nERRORE nella chiamata API a Gemini: {err}")
         return
 
-    print("\n=========================================================")
-    print("🤖 RISPOSTA GENERATA DALL'IA:")
-    print("=========================================================")
+    print("RISPOSTA GENERATA DALL'IA:")
     print(answer_text)
-    print("=========================================================\n")
 
 if __name__ == "__main__":
     main()

@@ -6,6 +6,7 @@ import time
 import warnings
 warnings.filterwarnings("ignore")
 
+# Disabilita l'invio anonimo di dati di utilizzo da parte di ChromaDB
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
 
 print("Avvio dello script in corso...", flush=True)
