@@ -2,8 +2,8 @@ import os
 import warnings
 warnings.filterwarnings("ignore")
 
+# Disabilita l'invio anonimo di dati di utilizzo da parte di ChromaDB
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
-
 
 import json
 import time
@@ -17,27 +17,25 @@ import streamlit as st
 from sentence_transformers import SentenceTransformer, CrossEncoder
 from dotenv import load_dotenv
 
-# ==========================================
 # 1. CONFIGURAZIONE PAGINA STREAMLIT
-# ==========================================
+
 st.set_page_config(
-    page_title="DocFlow AI - Assistente Universitario",
+    page_title="Assistente Universitario",
     page_icon="🎓",
     layout="wide"
 )
 
-# ==========================================
 # 2. INIZIALIZZAZIONE RISORSE CON CACHING
-# ==========================================
+
 # @st.cache_resource garantisce che i modelli PyTorch e il DB vengano caricati
-# in RAM UNA SOLA VOLTA all'avvio, evitando di rallentare la CPU i3 a ogni click.
+# in RAM UNA SOLA VOLTA all'avvio
 @st.cache_resource
 def load_rag_resources():
     load_dotenv()
     gemini_api_key = os.getenv("GEMINI_API_KEY", "").strip().strip('"').strip("'")
     
     if not gemini_api_key:
-        st.error("🔑 Errore: Chiamata API fallita. Manca GEMINI_API_KEY nel file .env!")
+        st.error("Errore: Chiamata API fallita. Manca GEMINI_API_KEY nel file .env!")
         st.stop()
         
     # Connessione ChromaDB (Sintassi nativa per ChromaDB 0.3.29 con DuckDB)
@@ -64,9 +62,9 @@ def load_rag_resources():
 # Caricamento risorse in memoria
 gemini_api_key, collection, embedding_model, reranker = load_rag_resources()
 
-# ==========================================
+
 # 3. PIPELINE DI RETRIEVAL E SINTESI
-# ==========================================
+
 def run_rag_pipeline(user_query: str):
     # FASE 1: Retrieval Bi-Encoder (k=10)
     query_tensor = embedding_model.encode(user_query, convert_to_tensor=True)
@@ -129,70 +127,88 @@ def run_rag_pipeline(user_query: str):
 
     RISPOSTA:"""
 
-    # Chiamata API REST con retry per sovraccarichi temporanei
+    # Gemini 3.5 Flash
+    # Definizione dell'url per Gemini a cui inviare la richiesta
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={gemini_api_key}"
     
+    # Definizione del payload JSON (dizionario) richiesto per la chiamata all'API di Gemini
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"temperature": 0.1}
     }
 
+    # Preparazione della richiesta HTTP con url, payload e headers (che specifica il tipo di chiamata json)
     req = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json"}
     )
 
+    # Invio della richiesta a Gemini e gestione della risposta
     answer_text = None
     for attempt in range(1, 4):
         try:
+            # urlopen() invia la richiesta HTTP POST
+            # read().decode() legge la risposta e la coverte da byte a stringa formato JSON
+            # json.loads() converte la stringa JSON in un dizionario Python
+            # La risposta contiene la risposta generata da Gemini, che viene estratta dal dizionario e stampata 
             with urllib.request.urlopen(req) as resp:
                 res_data = json.loads(resp.read().decode("utf-8"))
                 answer_text = res_data['candidates'][0]['content']['parts'][0]['text']
                 break
+
+        # Il primo livello gestisce gli errori delle API HTTP      
         except urllib.error.HTTPError as err:
             if err.code == 503 and attempt < 3:
                 time.sleep(2 * attempt)
             else:
-                return f"⚠️ Errore HTTP {err.code}: {err.reason}", top_6
+                return f"Errore HTTP {err.code}: {err.reason}", top_6
+        # Il secondo livello gestisce gli altri errori che non vengono catturati nel primo livello
         except Exception as err:
-            return f"⚠️ Errore durante la chiamata a Gemini: {err}", top_6
+            return f"Errore durante la chiamata a Gemini: {err}", top_6
 
     if not answer_text:
-        answer_text = "⚠️ Server Google temporaneamente occupati. Riprova tra qualche secondo."
+        answer_text = "Server Google temporaneamente occupati. Riprova tra qualche secondo."
 
     return answer_text, top_6
 
-# ==========================================
-# 4. INTERFACCIA UTENTE (STREAMLIT FRONTEND)
-# ==========================================
 
-# --- Sidebar Informativa ---
+# 4. INTERFACCIA UTENTE (STREAMLIT FRONTEND)
+
+# Sidebar Informativa
 with st.sidebar:
-    st.title("🎓 DocFlow AI")
-    st.subheader("Architettura RAG & Recommender")
+    st.title("Info Progetto")
     st.markdown("""
-    **Specifiche di Sistema:**
-    * **Embedding:** `paraphrase-multilingual-MiniLM-L12-v2`
-    * **Vector DB:** ChromaDB (`knowledge_base`)
-    * **Re-ranker:** Cross-Encoder PyTorch (`mMiniLMv2-L12`)
-    * **Recommender:** Similarità Coseno nativa su DB
+    Applicazione basata su tecnice di rappresentazione vettoriale (embedding) e misure di similarità.\n
+    Integra un sistema **RAG (Retrivial-Augmented Generation)** per rispondere a domande su regolamenti universitari, corsi e sbocchi occupazionali 
+    e un **Recommender System Testuale** per suggerire frammenti di testo correlati!
     """)
     st.divider()
+    
+    st.subheader("Architettura")
+    st.markdown("""
+    * **Modello di Embedding Testuale (Bi-Encoder):** `paraphrase-multilingual-MiniLM-L12-v2`
+    * **Vector DB:** ChromaDB (Collection:`knowledge_base`)
+    * **Re-ranking con Cross-Encoder:** `mMiniLMv2-L12`
+    * **Sintesi LLM:** Gemini 3.5 Flash
+    * **Recommender:** Cosine Similarity
+    """)
+    st.divider()
+    
     # Pulsante per resettare la cronologia della chat
     if st.button("🗑️ Cancella Cronologia Chat"):
         st.session_state.messages = []
         st.rerun()
 
-# --- Titolo Principale ---
-st.title("🏛️ Assistente Virtuale Documenti Universitari")
+# Titolo Principale
+st.title("Assistente Universitario 🎓")
 
-# --- Creazione delle Schede (Tabs) dell'Interfaccia ---
-tab_chat, tab_rec = st.tabs(["💬 Assistente RAG", "🔍 Recommender System (Testo)"])
+# Creazione delle Schede (Tabs) dell'Interfaccia
+tab_chat, tab_rec = st.tabs(["Assistente RAG", "Recommender System Testuale"])
 
-# --------------------------------------------------
+
 # TAB 1: CHATBOT RAG CON RE-RANKING PYTORCH
-# --------------------------------------------------
+
 with tab_chat:
     st.caption("Sistema locale RAG con pipeline a due stadi (Bi-Encoder + Cross-Encoder PyTorch)")
 
@@ -200,51 +216,60 @@ with tab_chat:
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
-    # Rendering della cronologia dei messaggi precedentemente inviati
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-            if "sources" in message:
-                with st.expander("📚 Visualizza Fonti ed Evidenze Re-ranking"):
-                    for idx, src in enumerate(message["sources"], start=1):
-                        st.write(f"**[{idx}] {src['metadata'].get('source', 'N/D')}** — Pagina {src['metadata'].get('page', 'N/D')}")
-                        st.caption(f"Score Cross-Encoder: `{src['rerank_score']:.4f}` | Posizione Originale DB: `#{src['original_rank']}`")
-                        st.text(src['doc'][:250] + "...")
-                        st.divider()
+    # 1. Creazione del contenitore per i messaggi SOPRA la barra di input
+    chat_container = st.container()
 
-    # Input utente e gestione del flusso di richiesta/risposta
-    if user_input := st.chat_input("Fai una domanda sui regolamenti o sui corsi di studio..."):
-        # 1. Registrazione e visualizzazione della domanda dell'utente
-        st.session_state.messages.append({"role": "user", "content": user_input})
-        with st.chat_message("user"):
-            st.markdown(user_input)
+    # 2. Barra di input posizionata sempre in fondo al Tab
+    user_input = st.chat_input("Fai una domanda sui regolamenti o sui corsi di studio...")
 
-        # 2. Elaborazione ed esecuzione della pipeline RAG a due stadi
-        with st.chat_message("assistant"):
-            with st.spinner("🔍 Ricerca semantica su ChromaDB e Re-ranking PyTorch in corso..."):
-                answer, top_sources = run_rag_pipeline(user_input)
-                
-                # Visualizzazione della risposta generata dall'LLM
-                st.markdown(answer)
-                
-                # Visualizzazione espandibile con l'evidenza delle fonti e del re-ranking
-                with st.expander("📚 Visualizza Fonti ed Evidenze Re-ranking"):
-                    for idx, src in enumerate(top_sources, start=1):
-                        st.write(f"**[{idx}] {src['metadata'].get('source', 'N/D')}** — Pagina {src['metadata'].get('page', 'N/D')}")
-                        st.caption(f"Score Cross-Encoder: `{src['rerank_score']:.4f}` | Posizione Originale DB: `#{src['original_rank']}`")
-                        st.text(src['doc'][:250] + "...")
-                        st.divider()
+    # 3. Rendering della cronologia e dei nuovi messaggi dentro il contenitore superiore
+    with chat_container:
+        # Rendering della cronologia dei messaggi precedentemente inviati
+        for message in st.session_state.messages:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
+                if "sources" in message:
+                    with st.expander("Visualizza Fonti ed Evidenze Re-ranking"):
+                        for idx, src in enumerate(message["sources"], start=1):
+                            st.write(f"**[{idx}] {src['metadata'].get('source', 'N/D')}** — Pagina {src['metadata'].get('page', 'N/D')}")
+                            st.caption(f"Score Cross-Encoder: `{src['rerank_score']:.4f}` | Posizione Originale DB: `#{src['original_rank']}`")
+                            st.text(src['doc'][:250] + "...")
+                            st.divider()
 
-        # 3. Salvataggio della risposta e delle relative fonti nello stato della sessione
-        st.session_state.messages.append({
-            "role": "assistant",
-            "content": answer,
-            "sources": top_sources
-        })
+        # Input utente e gestione del flusso di richiesta/risposta
+        if user_input:
+            # 1. Registrazione e visualizzazione immediata della domanda dell'utente
+            st.session_state.messages.append({"role": "user", "content": user_input})
+            with st.chat_message("user"):
+                st.markdown(user_input)
 
-# --------------------------------------------------
+            # 2. Elaborazione ed esecuzione della pipeline RAG a due stadi
+            with st.chat_message("assistant"):
+                with st.spinner("🔍 Ricerca semantica su ChromaDB e Re-ranking PyTorch in corso..."):
+                    answer, top_sources = run_rag_pipeline(user_input)
+                    
+                    # Visualizzazione della risposta generata dall'LLM
+                    st.markdown(answer)
+                    
+                    # Visualizzazione espandibile con l'evidenza delle fonti e del re-ranking
+                    with st.expander("Visualizza Fonti ed Evidenze Re-ranking"):
+                        for idx, src in enumerate(top_sources, start=1):
+                            st.write(f"**[{idx}] {src['metadata'].get('source', 'N/D')}** — Pagina {src['metadata'].get('page', 'N/D')}")
+                            st.caption(f"Score Cross-Encoder: `{src['rerank_score']:.4f}` | Posizione Originale DB: `#{src['original_rank']}`")
+                            st.text(src['doc'][:250] + "...")
+                            st.divider()
+
+            # 3. Salvataggio della risposta in session_state e rerun dell'interfaccia per allinearla
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": answer,
+                "sources": top_sources
+            })
+            st.rerun()
+
+
 # TAB 2: RECOMMENDER SYSTEM TESTUALE (CONTENT-BASED)
-# --------------------------------------------------
+
 with tab_rec:
     st.subheader("🔗 Esplorazione e Raccomandazione Documentale")
     st.caption("Seleziona un frammento di testo per trovare i 3 contenuti più simili presenti nel database vettoriale.")
@@ -283,7 +308,7 @@ with tab_rec:
             )
 
             # 4. Rendering delle 3 schede raccomandate distribuite su 3 colonne affiancate
-            st.markdown("### 📄 Documenti Raccomandati")
+            st.markdown("### Documenti Raccomandati")
             cols = st.columns(3)
             rec_idx = 0
             

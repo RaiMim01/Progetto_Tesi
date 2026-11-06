@@ -101,9 +101,9 @@ def main():
         # Estrazione dell'immagine dal PDF e conversione in Base64 grazie alla funzione extract_image_from_pdf
         base64_img = extract_image_from_pdf(source, page)
         
-        # Aggiungiamo un'etichetta testuale per Gemini per fargli capire quale immagine sta guardando
+        # Aggiungo un'etichetta testuale per Gemini per fargli capire quale immagine sta guardando
         gemini_image_parts.append({"text": f"--- IMMAGINE {idx} (Fonte: {source}, Pagina {page}) ---"})
-        # Aggiungiamo i dati raw dell'immagine
+        # Aggiungo i dati raw dell'immagine
         gemini_image_parts.append({
             "inlineData": {
                 "mimeType": "image/jpeg",
