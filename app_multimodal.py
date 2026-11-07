@@ -219,21 +219,23 @@ with st.sidebar:
     * **Recommender:** Cosine Similarity
     """)
     st.divider()
-    
+
+    # Pulsante per resettare la cronologia della chat
     if st.button("🧹 Pulisci la chat"):
         st.session_state.messages = []
         st.rerun()
 
+# Titolo Principale
 st.title("Assistente Universitario 🎓")
 
-# --- Creazione delle Schede (Tabs) dell'Interfaccia ---
+# Creazione delle Schede (Tabs) dell'Interfaccia
 tab_chat, tab_rec = st.tabs(["Assistente RAG ", "Recommender System Multimodale"])
 
 
-# TAB 1: CHATBOT MULTIMODALE CON GEMINI 3.5 FLASH
+# TAB 1: SISTEMA RAG CON MODELLO MULTIMODALE
 
 with tab_chat:
-    st.caption("Chiedimi informazioni su corsi, regolamenti o sbocchi lavorativi!")
+    st.caption("Sistema locale RAG con modello di Embedding multimodale")
 
     # Inizializzazione della cronologia messaggi
     if "messages" not in st.session_state:
@@ -243,7 +245,7 @@ with tab_chat:
     chat_container = st.container()
 
     # 2. Barra di input posizionata in fondo al Tab
-    user_input = st.chat_input("Es: Quali sono gli sbocchi occupazionali previsti?")
+    user_input = st.chat_input("Fai una domanda sui regolamenti o sui corsi di studio...")
 
     # 3. Rendering della cronologia e dei nuovi messaggi dentro il contenitore superiore
     with chat_container:
@@ -271,7 +273,7 @@ with tab_chat:
 
             # Genera e mostra la risposta dell'assistente sopra la barra
             with st.chat_message("assistant"):
-                with st.spinner("Sto consultando le pagine dei documenti visivi... 🔍"):
+                with st.spinner("Sto consultando le pagine dei documenti... 🔍"):
                     answer, sources = run_multimodal_pipeline(user_input)
                     st.markdown(answer)
                     
@@ -295,11 +297,11 @@ with tab_chat:
             st.rerun()
 
 
-# TAB 2: RECOMMENDER SYSTEM VISIVO-STRUTTURALE
+# TAB 2: RECOMMENDER SYSTEM MULTIMODALE
 
 with tab_rec:
     st.subheader("Raccomandazione delle Pagine PDF")
-    st.caption("Seleziona una pagina PDF dal database per visualizzare le 3 pagine visivamente e concettualmente più vicine.")
+    st.caption("Seleziona una pagina PDF dal database per visualizzare le 3 pagine visivamente e concettualmente più simili.")
 
     all_pages = db_collection.get(include=["metadatas"])
     
