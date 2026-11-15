@@ -207,10 +207,10 @@ st.title("Assistente Universitario 🎓")
 tab_chat, tab_rec = st.tabs(["Assistente RAG", "Recommender System Testuale"])
 
 
-# TAB 1: CHATBOT RAG CON RE-RANKING PYTORCH
+# TAB 1: SISTEMA RAG CON RE-RANKING
 
 with tab_chat:
-    st.caption("Sistema locale RAG con pipeline a due stadi (Bi-Encoder + Cross-Encoder PyTorch)")
+    st.caption("Sistema locale RAG con modelli di Embedding Testuali Bi-Encoder e Cross-Encoder")
 
     # Inizializzazione della cronologia messaggi in session_state se non presente
     if "messages" not in st.session_state:
@@ -229,7 +229,7 @@ with tab_chat:
             with st.chat_message(message["role"]):
                 st.markdown(message["content"])
                 if "sources" in message:
-                    with st.expander("Visualizza Fonti ed Evidenze Re-ranking"):
+                    with st.expander("Visualizza Fonti e Punteggi Similarità"):
                         for idx, src in enumerate(message["sources"], start=1):
                             st.write(f"**[{idx}] {src['metadata'].get('source', 'N/D')}** — Pagina {src['metadata'].get('page', 'N/D')}")
                             st.caption(f"Score Cross-Encoder: `{src['rerank_score']:.4f}` | Posizione Originale DB: `#{src['original_rank']}`")
@@ -245,14 +245,14 @@ with tab_chat:
 
             # 2. Elaborazione ed esecuzione della pipeline RAG a due stadi
             with st.chat_message("assistant"):
-                with st.spinner("🔍 Ricerca semantica su ChromaDB e Re-ranking PyTorch in corso..."):
+                with st.spinner("Sto consultando i documenti testuali... 🔍"):
                     answer, top_sources = run_rag_pipeline(user_input)
                     
                     # Visualizzazione della risposta generata dall'LLM
                     st.markdown(answer)
                     
                     # Visualizzazione espandibile con l'evidenza delle fonti e del re-ranking
-                    with st.expander("Visualizza Fonti ed Evidenze Re-ranking"):
+                    with st.expander("Visualizza Fonti e Punteggi Similarità"):
                         for idx, src in enumerate(top_sources, start=1):
                             st.write(f"**[{idx}] {src['metadata'].get('source', 'N/D')}** — Pagina {src['metadata'].get('page', 'N/D')}")
                             st.caption(f"Score Cross-Encoder: `{src['rerank_score']:.4f}` | Posizione Originale DB: `#{src['original_rank']}`")
@@ -268,10 +268,10 @@ with tab_chat:
             st.rerun()
 
 
-# TAB 2: RECOMMENDER SYSTEM TESTUALE (CONTENT-BASED)
+# TAB 2: RECOMMENDER SYSTEM TESTUALE
 
 with tab_rec:
-    st.subheader("🔗 Esplorazione e Raccomandazione Documentale")
+    st.subheader("Raccomandazione Documenti Testuali")
     st.caption("Seleziona un frammento di testo per trovare i 3 contenuti più simili presenti nel database vettoriale.")
 
     # 1. Recupero di tutti i chunk di testo censiti nel DB vettoriale
@@ -291,7 +291,7 @@ with tab_rec:
         selected_id = options_map[selected_label]
 
         # Avvio del calcolo delle raccomandazioni al click sul pulsante
-        if st.button("🔍 Trova Documenti Correlati", type="primary"):
+        if st.button("🔍 Cerca Documenti Correlati", type="primary"):
             # 2. Recupero dell'embedding vettoriale già calcolato e salvato nel DB
             target_record = collection.get(ids=[selected_id], include=["embeddings", "documents", "metadatas"])
             target_vector = target_record["embeddings"][0]
