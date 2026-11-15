@@ -1,5 +1,4 @@
 import os
-import sys
 import re
 import hashlib
 import time
@@ -48,6 +47,7 @@ def main():
     print(f"2. Caricate con successo {len(documents)} pagine totali dai PDF.", flush=True)
 
     # 2. Taglio del testo in chunk
+    # Se i parametri di taglio vengono modificati -> Bisogna ricreare la collezione per non mischiare chunk di dimensioni diverse
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=1100,      # Aumentato da 600 a 1100 per mantenere il contesto dei paragrafi
         chunk_overlap=200,     # Aumentato da 100 a 200 per evitare tagli sui margini
@@ -83,12 +83,8 @@ def main():
         custom_id = f"{filename}_p{page}_c{chunk_counters[key]}"
         all_ids.append(custom_id)
     
-    # 3. Modello di Embedding (SentenceTransformers su PyTorch)
-    print("4. Caricamento modello MODIFICA DA'all-MiniLM-L6-v2' A 'paraphrase-multilingual-MiniLM-L12-v2'...", flush=True)
-    embedding_model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
-
-    # 4. Inizializzazione Vector Database Locale (ChromaDB)
-    print(f"5. Connessione al Vector DB locale ('{CHROMA_PATH}')...", flush=True)
+    # 3. Inizializzazione Vector Database Locale (ChromaDB)
+    print(f"4. Connessione al Vector DB locale ('{CHROMA_PATH}')...", flush=True)
     client = chromadb.Client(Settings(
         chroma_db_impl="duckdb+parquet",
         persist_directory=CHROMA_PATH,
@@ -98,16 +94,38 @@ def main():
     # creazione della collection "knowledge_base" con metadati per la Cosine Similarity 
     collection = client.get_or_create_collection(name="knowledge_base", metadata={"hnsw:space": "cosine"})
 
-    print(f"6. Calcolo tensori PyTorch e scrittura a lotti in ChromaDB...", flush=True)
+    # Recupera solo gli ID già salvati (senza scaricare i vettori) per evitare ricalcoli
+    existing_records = collection.get(include=[])
+    existing_ids = set(existing_records["ids"]) if existing_records and "ids" in existing_records else set()
+
+    new_chunks = []
+    new_ids = []
+    for doc, cid in zip(chunks, all_ids):
+        if cid not in existing_ids:
+            new_chunks.append(doc)
+            new_ids.append(cid)
+
+    skipped_chunks = len(chunks) - len(new_chunks)
+    print(f"  Chunk già presenti saltati: {skipped_chunks} | Nuovi chunk da elaborare: {len(new_chunks)}", flush=True)
+
+    if not new_chunks:
+        print(f"\nESITO: Nessun nuovo documento da indicizzare. Elementi totali in ChromaDB: {collection.count()}", flush=True)
+        return
+
+    # 4. Modello di Embedding (SentenceTransformers su PyTorch)
+    print("5. Caricamento modello 'paraphrase-multilingual-MiniLM-L12-v2'...", flush=True)
+    embedding_model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
+
+    print(f"6. Calcolo tensori PyTorch e scrittura in ChromaDB...", flush=True)
     start_total = time.time()
 
     # Loop per il calcolo degli embedding e il salvataggio del database
-    for i in range(0, len(chunks), BATCH_SIZE):
-        batch = chunks[i : i + BATCH_SIZE]
+    for i in range(0, len(new_chunks), BATCH_SIZE):
+        batch = new_chunks[i : i + BATCH_SIZE]
         batch_texts = [doc.page_content for doc in batch]
         batch_metadatas = [doc.metadata for doc in batch]
         
-        batch_ids = all_ids[i : i + BATCH_SIZE]
+        batch_ids = new_ids[i : i + BATCH_SIZE]
 
         # Calcolo degli embedding con PyTorch e il modello di embedding
         tensors = embedding_model.encode(batch_texts, convert_to_tensor=True)
@@ -131,10 +149,17 @@ def main():
             metadatas=batch_metadatas,
             ids=batch_ids
         )
-        print(f"   Salvato batch {i // BATCH_SIZE + 1} / {(len(chunks) - 1) // BATCH_SIZE + 1} ({len(batch)} chunk)", flush=True)
+        print(f"   Salvato batch {i // BATCH_SIZE + 1} / {(len(new_chunks) - 1) // BATCH_SIZE + 1} ({len(batch)} chunk)", flush=True)
+
+    # Forza la scrittura su disco per DuckDB+Parquet
+    client.persist()
 
     elapsed = time.time() - start_total
-    print(f"\nESITO: Processati {len(chunks)} chunk in {elapsed:.2f} s. Elementi totali in ChromaDB: {collection.count()}")
+    
+    print(f"\nESITO FINALE:")
+    print(f"- Nuovi chunk vettorizzati: {len(new_chunks)} (in {elapsed:.2f} s)")
+    print(f"- Chunk già esistenti saltati: {skipped_chunks}")
+    print(f"- Elementi totali nella collezione 'knowledge_base': {collection.count()}")
 
 if __name__ == "__main__":
     main()
