@@ -221,7 +221,7 @@ with st.sidebar:
     st.divider()
 
     # Pulsante per resettare la cronologia della chat
-    if st.button("🧹 Pulisci la chat"):
+    if st.button("🗑️ Cancella Cronologia Chat"):
         st.session_state.messages = []
         st.rerun()
 

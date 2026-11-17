@@ -70,7 +70,7 @@ def run_rag_pipeline(user_query: str):
     query_tensor = embedding_model.encode(user_query, convert_to_tensor=True)
     results = collection.query(
         query_embeddings=[query_tensor.cpu().tolist()],
-        n_results=10
+        n_results=25
     )
 
     documents = results['documents'][0]
@@ -99,11 +99,11 @@ def run_rag_pipeline(user_query: str):
         })
 
     ranked_results.sort(key=lambda x: x['rerank_score'], reverse=True)
-    top_6 = ranked_results[:6]
+    top_chunks = ranked_results[:15]
 
     # FASE 3: Prompt Engineering e LLM (Chiamata REST a Gemini)
     formatted_context = ""
-    for idx, item in enumerate(top_6, start=1):
+    for idx, item in enumerate(top_chunks, start=1):
         source = item['metadata'].get('source', 'Sconosciuta')
         page = item['metadata'].get('page', 'Sconosciuta')
         chunk_id = item['chunk_id']
@@ -162,15 +162,51 @@ def run_rag_pipeline(user_query: str):
             if err.code == 503 and attempt < 3:
                 time.sleep(2 * attempt)
             else:
-                return f"Errore HTTP {err.code}: {err.reason}", top_6
+                return f"Errore HTTP {err.code}: {err.reason}", top_chunks
         # Il secondo livello gestisce gli altri errori che non vengono catturati nel primo livello
         except Exception as err:
-            return f"Errore durante la chiamata a Gemini: {err}", top_6
+            return f"Errore durante la chiamata a Gemini: {err}", top_chunks
 
     if not answer_text:
         answer_text = "Server Google temporaneamente occupati. Riprova tra qualche secondo."
 
-    return answer_text, top_6
+    return answer_text, top_chunks
+
+
+# 4. FUNZIONE DI RENDERING DELLE FONTI (UI COMPATTA)
+
+def render_sources_expander(sources):
+    """Visualizza le fonti in modo compatto e ordinato tramite tabella riepilogativa e griglia a 2 colonne."""
+    if not sources:
+        return
+
+    with st.expander(f"Visualizza le {len(sources)} Fonti Consultate e Punteggi Re-ranking"):
+        tab_summary, tab_cards = st.tabs(["Riepilogo Ranking", "Estratti Testuali"])
+
+        # Scheda 1: Tabella comparativa Bi-Encoder vs Cross-Encoder
+        with tab_summary:
+            table_data = []
+            for idx, src in enumerate(sources, start=1):
+                table_data.append({
+                    "Rank Finale": f"#{idx}",
+                    "Documento": src['metadata'].get('source', 'N/D'),
+                    "Pagina": src['metadata'].get('page', 'N/D'),
+                    "Score Cross-Encoder": round(src['rerank_score'], 4),
+                    "Rank Bi-Encoder": f"#{src['original_rank']}",
+                    "ID Chunk": src['chunk_id']
+                })
+            st.dataframe(table_data, use_container_width=True)
+
+        # Scheda 2: Griglia a 2 colonne con gli estratti dei chunk
+        with tab_cards:
+            cols = st.columns(2)
+            for idx, src in enumerate(sources):
+                with cols[idx % 2]:
+                    source_name = src['metadata'].get('source', 'N/D')
+                    page_num = src['metadata'].get('page', 'N/D')
+                    st.markdown(f"**[{idx + 1}] {source_name}** — Pag. {page_num}")
+                    st.caption(f"Score Cross-Encoder: `{src['rerank_score']:.4f}` | Rank DB iniziale: `#{src['original_rank']}`")
+                    st.info(src['doc'][:280] + "...")
 
 
 # 4. INTERFACCIA UTENTE (STREAMLIT FRONTEND)
@@ -229,12 +265,7 @@ with tab_chat:
             with st.chat_message(message["role"]):
                 st.markdown(message["content"])
                 if "sources" in message:
-                    with st.expander("Visualizza Fonti e Punteggi Similarità"):
-                        for idx, src in enumerate(message["sources"], start=1):
-                            st.write(f"**[{idx}] {src['metadata'].get('source', 'N/D')}** — Pagina {src['metadata'].get('page', 'N/D')}")
-                            st.caption(f"Score Cross-Encoder: `{src['rerank_score']:.4f}` | Posizione Originale DB: `#{src['original_rank']}`")
-                            st.text(src['doc'][:250] + "...")
-                            st.divider()
+                    render_sources_expander(message["sources"])
 
         # Input utente e gestione del flusso di richiesta/risposta
         if user_input:
@@ -250,14 +281,8 @@ with tab_chat:
                     
                     # Visualizzazione della risposta generata dall'LLM
                     st.markdown(answer)
+                    render_sources_expander(top_sources)
                     
-                    # Visualizzazione espandibile con l'evidenza delle fonti e del re-ranking
-                    with st.expander("Visualizza Fonti e Punteggi Similarità"):
-                        for idx, src in enumerate(top_sources, start=1):
-                            st.write(f"**[{idx}] {src['metadata'].get('source', 'N/D')}** — Pagina {src['metadata'].get('page', 'N/D')}")
-                            st.caption(f"Score Cross-Encoder: `{src['rerank_score']:.4f}` | Posizione Originale DB: `#{src['original_rank']}`")
-                            st.text(src['doc'][:250] + "...")
-                            st.divider()
 
             # 3. Salvataggio della risposta in session_state e rerun dell'interfaccia per allinearla
             st.session_state.messages.append({
