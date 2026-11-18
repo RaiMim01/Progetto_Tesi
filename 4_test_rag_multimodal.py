@@ -11,15 +11,22 @@ print("Avvio dello script in corso...", flush=True)
 import chromadb
 from chromadb.config import Settings
 import pymupdf as fitz
-from PIL import Image
 import torch
-from transformers import AutoModel, AutoProcessor, Qwen2VLForConditionalGeneration
-import gc
+from transformers import AutoModel
+from dotenv import load_dotenv
+import urllib.request
+import json
+
+# CONFIGURAZIONE GEMINI API KEY E DATABASE
+
+load_dotenv()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip().strip('"').strip("'")
+if not GEMINI_API_KEY:
+    raise ValueError("Nessuna chiave trovata. Controlla il file .env!")
 
 CHROMA_PATH = "vector_db"
 COLLECTION_NAME = "multimodal_kb"
 DATA_PATH = "documents"
-TOP_K_IMAGES = 1
 
 def get_alibaba_text_embedding(model, text):
     """Calcola l'embedding di una stringa di testo usando il modello multimodale Alibaba Qwen2-VL."""
@@ -35,22 +42,31 @@ def get_alibaba_text_embedding(model, text):
         # Restituzione dell'embedding
         return emb[0]
 
-def extract_pil_image_from_pdf(filename, page_num):
-    """Estrae una pagina PDF e la restituisce direttamente come oggetto PIL Image."""
+
+def extract_image_from_pdf(filename, page_num):
+    """Estrae un'immagine da un PDF specifico e la converte in Base64 per Gemini."""
+    # Costruzione del percorso e apertura del file pdf con PyMuPDF
     filepath = os.path.join(DATA_PATH, filename)
     doc = fitz.open(filepath)
+    # Recupero della pagina con conversione dell'indice partendo da 0 (PyMuPDF) rispetto a 1 (come salvato nel database)
     page = doc.load_page(page_num - 1)
-    # Scala 1.2x: ottimo compromesso tra leggibilità dei caratteri e consumo RAM
-    pix = page.get_pixmap(matrix=fitz.Matrix(1.2, 1.2))
-    return Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+    # Renderizzazione della pagina in un'immagine (pixmap) con una scala di 1.5x (zoom) per una migliore qualità
+    pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
+    # Conversione dei pixel in bytes formato JPEG
+    image_bytes = pix.tobytes("jpeg")
+    # Doppia conversione: prima i bytes jpeg vengono codificati in Base64, poi convertiti in stringa UTF-8
+    return base64.b64encode(image_bytes).decode("utf-8")
+
 
 def main():
     start_total = time.time()
-    # FASE 1: RETRIEVAL (Ricerca per similarità)
-    
+    # FASE 1: RETRIEVAL (Ricerca per similarità)  
+
     print(f"1. Connessione al database vettoriale in '{CHROMA_PATH}'...", flush=True)
     client = chromadb.Client(Settings(chroma_db_impl="duckdb+parquet", persist_directory=CHROMA_PATH))
+
     collection = client.get_collection(name=COLLECTION_NAME)
+
 
     print("2. Caricamento modello di embedding multimodale Alibaba...", flush=True)
     model_name = "Alibaba-NLP/gme-Qwen2-VL-2B-Instruct"
@@ -65,116 +81,100 @@ def main():
     query_vector = get_alibaba_text_embedding(embedding_model, user_query)
 
     # Chiediamo i 3 risultati più simili (Top-3 è ideale per le immagini con Gemini)
-    print("4. Ricerca delle pagine più pertinenti...", flush=True)
+    print("4. Ricerca delle 3 pagine più pertinenti...", flush=True)
+
     results = collection.query(
         query_embeddings=[query_vector],
-        n_results=TOP_K_IMAGES 
+        n_results=3
     )
 
     metadatas = results['metadatas'][0]
 
-    # LIBERAZIONE RAM: Scarichiamo il modello di embedding prima di caricare il generatore
-    print("4. Rilascio memoria del modello di embedding...", flush=True)
-    del embedding_model
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
 
-    # FASE 2: ESTRAZIONE IMMAGINI DAL PDF
-    
-    print(f"5. Estrazione delle top-{TOP_K_IMAGES} pagine PDF come immagini...", flush=True)
-    pil_images = []
-    message_content = []
+    # FASE 2: PREPARAZIONE IMMAGINI PER GEMINI
+
+    print("5. Estrazione dinamica delle immagini dai PDF...", flush=True)
+
+    # Lista che conterrà un dizionario per ogni immagine con un testo descrittivo e l'immagine in Base64
+    gemini_image_parts = []
 
     for idx, meta in enumerate(metadatas, 1):
         source = meta.get("source")
         page = meta.get("page")
-        print(f"   -> Recupero immagine {idx}: {source} (Pagina {page})", flush=True)
+        print(f"   -> Recupero immagine {idx}: {source} (Pagina {page})")
 
-        img = extract_pil_image_from_pdf(source, page)
-        pil_images.append(img)
+        # Estrazione dell'immagine dal PDF e conversione in Base64 grazie alla funzione extract_image_from_pdf
+        base64_img = extract_image_from_pdf(source, page)
 
-        message_content.append({"type": "text", "text": f"--- IMMAGINE {idx} (Fonte: {source}, Pagina {page}) ---"})
-        message_content.append({"type": "image", "image": img})
+        # Aggiungo un'etichetta testuale per Gemini per fargli capire quale immagine sta guardando
+        gemini_image_parts.append({"text": f"--- IMMAGINE {idx} (Fonte: {source}, Pagina {page}) ---"})
+        # Aggiungo i dati raw dell'immagine
+        gemini_image_parts.append({
+            "inlineData": {
+                "mimeType": "image/jpeg",
+                "data": base64_img
+            }
+        })
 
+    # FASE 3: GENERAZIONE RISPOSTA CON LLM (GEMINI)
 
-    # FASE 3: GENERAZIONE RISPOSTA IN LOCALE CON QWEN2-VL
-    
-    print("\n6. Caricamento VLM generativo locale (Qwen/Qwen2-VL-2B-Instruct)...", flush=True)
-    gen_model_name = "Qwen/Qwen2-VL-2B-Instruct"
+    print("\n6. Invio richiesta a Gemini 3.5 Flash...", flush=True)
 
-    # Limitiamo i pixel per immagine (256-512 token visivi) per evitare Out-Of-Memory
-    min_pixels = 512 * 28 * 28
-    max_pixels = 768 * 28 * 28
-    processor = AutoProcessor.from_pretrained(
-        gen_model_name,
-        min_pixels=min_pixels,
-        max_pixels=max_pixels
-    )
-
-    vlm_model = Qwen2VLForConditionalGeneration.from_pretrained(
-        gen_model_name,
-        torch_dtype=torch.float32,
-        attn_implementation="eager"  # Bypass del kernel SDPA su CPU ARM Jetson
-    )
-
-    prompt_text = f"""Sei un assistente universitario esperto. Guarda attentamente le immagini delle pagine dei documenti ufficiali fornite sopra.
-
+    prompt_text = f"""Sei un assistente universitario esperto. Ti ho fornito le immagini delle pagine dei documenti ufficiali più pertinenti alla richiesta dell'utente.
     COMPITI:
-    1. Rispondi alla domanda dell'utente basandoti ESCLUSIVAMENTE sulle tabelle, schemi o testi visibili in queste immagini.
-    2. Cita sempre la fonte specificando il nome del file e la pagina (es. [Fonte: Regolamento.pdf, Pagina 3]).
-    3. Se l'informazione non è presente in nessuna delle immagini, di' chiaramente che i documenti non contengono la risposta.
-
+    1. Guarda attentamente le immagini fornite.
+    2. Rispondi alla domanda dell'utente basandoti ESCLUSIVAMENTE sulle tabelle, schemi o testi visibili in queste immagini.
+    3. Cita sempre la fonte specificando il nome del file e la pagina (es. [Fonte: Regolamento.pdf, Pagina 3]).
+    4. Se l'informazione non è presente in nessuna delle immagini, di' chiaramente che i documenti non contengono la risposta.
     DOMANDA UTENTE: {user_query}
     RISPOSTA:"""
 
-    message_content.append({"type": "text", "text": prompt_text})
-    messages = [{"role": "user", "content": message_content}]
+    # Costruiamo il payload per Gemini: Prompt testuale + Immagini in Base64
+    parts = [{"text": prompt_text}] + gemini_image_parts
 
-    print("7. Preparazione tensori multimodali e generazione risposta (potrebbe richiedere 1-3 minuti)...", flush=True)
+    # Gemini 3.5 Flash
+    # Definizione dell'url per Gemini a cui inviare la richiesta
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={GEMINI_API_KEY}"
+
+    # Definizione del payload JSON (dizionario) richiesto per la chiamata all'API di Gemini
+    payload = {
+        "contents": [{"parts": parts}],
+        "generationConfig": {"temperature": 0.2}
+    }
+
     start_gen = time.time()
 
-    text_prompt = processor.apply_chat_template(
-        messages,
-        tokenize=False,
-        add_generation_prompt=True
+    # Preparazione della richiesta HTTP con url, payload e headers (che specifica il tipo di chiamata json)
+    req = urllib.request.Request(
+        url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"}
     )
 
-    inputs = processor(
-        text=[text_prompt],
-        images=pil_images,
-        padding=True,
-        return_tensors="pt"
-    )
+    # Invio della richiesta a Gemini e gestione della risposta
+    try:
+        # urlopen() invia la richiesta HTTP POST
+        # read().decode() legge la risposta e la coverte da byte a stringa formato JSON
+        # json.loads() converte la stringa JSON in un dizionario Python
+        # La risposta contiene la risposta generata da Gemini, che viene estratta dal dizionario e stampata
+        with urllib.request.urlopen(req) as resp:
+            res_data = json.loads(resp.read().decode("utf-8"))
+            answer_text = res_data['candidates'][0]['content']['parts'][0]['text']       
 
-    with torch.no_grad():
-        generated_ids = vlm_model.generate(
-            **inputs,
-            max_new_tokens=25,
-            do_sample=False,  # Generazione deterministica (più veloce e precisa)
-            repetition_penalty=1.15,
-            synced_gpus=False
-        )
-
-
-    # Taglia i token del prompt iniziale per tenere solo la risposta generata
-    generated_ids_trimmed = [
-        out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
-    ]
-    answer_text = processor.batch_decode(
-        generated_ids_trimmed,
-        skip_special_tokens=True
-    )[0]
+    # Il primo livello gestisce gli errori delle API HTTP      
+    except urllib.error.HTTPError as err:
+        print(f"\nERRORE HTTP {err.code}: {err.read().decode('utf-8')}")
+    # Il secondo livello gestisce gli altri errori che non vengono catturati nel primo livello
+    except Exception as err:
+        print(f"\nERRORE: {err}")
 
     gen_time = time.time() - start_gen
     total_time = time.time() - start_total
 
     print("\n" + "=" * 60)
-    print("RISPOSTA GENERATA IN LOCALE DA ALIBABA QWEN2-VL-2B:")
+    print("RISPOSTA GENERATA DA GEMINI:")
     print("=" * 60)
     print(answer_text)
     print("=" * 60)
     print(f"Tempo di sola generazione: {gen_time:.2f} s | Tempo totale pipeline: {total_time:.2f} s")
 
 if __name__ == "__main__":
-    main()
+    main() 
