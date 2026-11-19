@@ -1,4 +1,5 @@
 import os
+import time
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -34,6 +35,9 @@ CHROMA_PATH = "vector_db"
 COLLECTION_NAME = "knowledge_base"
 
 def main():
+    # Avvio cronometro per misurare il tempo totale della pipeline
+    start_total = time.time()
+
     # FASE 1: TEST RICERCA SEMANTICA (RETRIEVER)
 
     # 1. Connessione a ChromaDB in sola lettura (Sintassi nativa ChromaDB 0.3.29)
@@ -145,7 +149,7 @@ def main():
 
     RISPOSTA:"""
 
-    print("8. Invio richiesta a Gemini 3.6 Flash (Attendere...)", flush=True)
+    print("8. Invio richiesta a Gemini 3.5 Flash (Attendere...)", flush=True)
 
     # Chiamata HTTP diretta all'endpoint REST ufficiale di Gemini 3.5 Flash
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={GEMINI_API_KEY}"
@@ -165,6 +169,9 @@ def main():
 
     # Invio della richiesta a Gemini e gestione della risposta
     try:
+        # Avvio cronometro per misurare il tempo di sola generazione locale
+        start_gen = time.time()
+
         # urlopen() invia la richiesta HTTP POST
         # read().decode() legge la risposta e la coverte da byte a stringa formato JSON
         # json.loads() converte la stringa JSON in un dizionario Python
@@ -172,7 +179,10 @@ def main():
         with urllib.request.urlopen(req) as resp:
             res_data = json.loads(resp.read().decode("utf-8"))
             answer_text = res_data['candidates'][0]['content']['parts'][0]['text']
-    
+
+        gen_time = time.time() - start_gen
+        total_time = time.time() - start_total
+
     # Il primo livello gestisce gli errori delle API HTTP
     except urllib.error.HTTPError as err:
         error_body = err.read().decode('utf-8')
@@ -183,8 +193,13 @@ def main():
         print(f"\nERRORE nella chiamata API a Gemini: {err}")
         return
 
-    print("RISPOSTA GENERATA DALL'IA:")
+    print("\n" + "=" * 60)
+    print("RISPOSTA GENERATA DA GEMINI:")
+    print("=" * 60)
     print(answer_text)
+    print("=" * 60)
+    print(f"Tempo di sola generazione: {gen_time:.2f} s | Tempo totale pipeline: {total_time:.2f} s")
+
 
 if __name__ == "__main__":
     main()
