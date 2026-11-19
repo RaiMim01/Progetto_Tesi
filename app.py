@@ -18,7 +18,7 @@ import streamlit as st
 from sentence_transformers import SentenceTransformer, CrossEncoder
 from dotenv import load_dotenv
 
-# Endpoint REST locale di llama-server (API OpenAI-compatible) per inferenza Edge su Jetson Nano
+# Endpoint REST locale di llama-server (API OpenAI-compatible) per inferenza Edge su Jetson
 LLAMA_SERVER_URL = "http://127.0.0.1:18080/v1/chat/completions"
 
 # 1. CONFIGURAZIONE PAGINA STREAMLIT
@@ -474,7 +474,7 @@ with tab_edge:
             with st.chat_message("user"):
                 st.markdown(edge_user_input)
 
-            # Esecuzione pipeline RAG locale su Jetson Nano con metriche di latenza/throughput
+            # Esecuzione pipeline RAG locale su Jetson con metriche di latenza/throughput
             with st.chat_message("assistant"):
                 with st.spinner("Elaborazione locale con Ministral-3-3B (attendere ~40-60s)..."):
                     answer, top_sources, metrics_info = run_edge_rag_pipeline(edge_user_input)

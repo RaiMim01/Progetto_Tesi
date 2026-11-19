@@ -104,7 +104,7 @@ def main():
     # Ordinamento decrescente in base al punteggio del Cross-Encoder
     ranked_results.sort(key=lambda x: x['rerank_score'], reverse=True)
 
-    # 6b. Rilascio memoria RAM dei modelli PyTorch prima della generazione su Jetson (4 GB)
+    # 6b. Rilascio memoria RAM dei modelli PyTorch prima della generazione su Jetson
     print("6b. Rilascio memoria RAM di Bi-Encoder e Cross-Encoder...", flush=True)
     del embedding_model, reranker, query_tensor, scores_tensor
     gc.collect()
