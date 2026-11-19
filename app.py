@@ -5,6 +5,7 @@ warnings.filterwarnings("ignore")
 # Disabilita l'invio anonimo di dati di utilizzo da parte di ChromaDB
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
 
+import gc
 import json
 import time
 import urllib.request
@@ -16,6 +17,9 @@ from chromadb.config import Settings
 import streamlit as st
 from sentence_transformers import SentenceTransformer, CrossEncoder
 from dotenv import load_dotenv
+
+# Endpoint REST locale di llama-server (API OpenAI-compatible) per inferenza Edge su Jetson Nano
+LLAMA_SERVER_URL = "http://127.0.0.1:18080/v1/chat/completions"
 
 # 1. CONFIGURAZIONE PAGINA STREAMLIT
 
@@ -66,6 +70,7 @@ gemini_api_key, collection, embedding_model, reranker = load_rag_resources()
 # 3. PIPELINE DI RETRIEVAL E SINTESI
 
 def run_rag_pipeline(user_query: str):
+    start_total = time.time()
     # FASE 1: Retrieval Bi-Encoder (k=10)
     query_tensor = embedding_model.encode(user_query, convert_to_tensor=True)
     results = collection.query(
@@ -116,7 +121,7 @@ def run_rag_pipeline(user_query: str):
     REGOLE TASSATIVE DI RISPOSTA:
     1. FEDELTÀ TESTUALE ASSOLUTA: Utilizza ESATTAMENTE i nomi delle figure professionali e dei settori presenti nel testo. NON inventare, sintetizzare con sinonimi o parafrasare i titoli.
     2. NESSUNA ALLUCINAZIONE: Se un'informazione non è esplicitamente citata nei documenti, NON includerla per alcun motivo.
-    3. CITAZIONE FONTI: Alla fine di OGNI concetto o ruolo riportato, inserisci la citazione esatta usando il file e la pagina indicati. Formato obbligatorio: [Fonte: NOME_FILE, Pag. X]
+    3. CITAZIONE FONTI: Alla fine di OGNI concetto o ruolo riportato, inserisci la citazione esatta usando file e pagina indicati. Formato obbligatorio: [Fonte: NOME_FILE, Pag. X]
     4. STRUTTURA: Presenta i ruoli e gli sbocchi in un elenco puntato chiaro e descrittivo.
 
     CONTESTO DEI DOCUMENTI ESTRATTI:
@@ -146,8 +151,10 @@ def run_rag_pipeline(user_query: str):
 
     # Invio della richiesta a Gemini e gestione della risposta
     answer_text = None
+    metrics_info = ""
     for attempt in range(1, 4):
         try:
+            start_gen = time.time()
             # urlopen() invia la richiesta HTTP POST
             # read().decode() legge la risposta e la coverte da byte a stringa formato JSON
             # json.loads() converte la stringa JSON in un dizionario Python
@@ -155,7 +162,21 @@ def run_rag_pipeline(user_query: str):
             with urllib.request.urlopen(req) as resp:
                 res_data = json.loads(resp.read().decode("utf-8"))
                 answer_text = res_data['candidates'][0]['content']['parts'][0]['text']
-                break
+                finish_reason = res_data['candidates'][0].get('finishReason', 'N/D')
+                usage = res_data.get('usageMetadata', {})
+                prompt_tokens = usage.get('promptTokenCount', 0)
+                completion_tokens = usage.get('candidatesTokenCount', 0)
+
+            gen_time = time.time() - start_gen
+            total_time = time.time() - start_total
+            tokens_sec = completion_tokens / gen_time if gen_time > 0 else 0.0
+
+            metrics_info = (
+                f"Generazione: {gen_time:.2f} s | Totale: {total_time:.2f} s | "
+                f"Token: {prompt_tokens} in / {completion_tokens} out ({tokens_sec:.2f} tok/s) | Stop: {finish_reason}"
+            )
+                
+            break
 
         # Il primo livello gestisce gli errori delle API HTTP      
         except urllib.error.HTTPError as err:
@@ -170,7 +191,128 @@ def run_rag_pipeline(user_query: str):
     if not answer_text:
         answer_text = "Server Google temporaneamente occupati. Riprova tra qualche secondo."
 
-    return answer_text, top_chunks
+    return answer_text, top_chunks, metrics_info
+
+
+# 3B. PIPELINE DI RETRIEVAL E SINTESI EDGE LOCALE (MINISTRAL-3-3B VIA LLAMA.CPP)
+
+def run_edge_rag_pipeline(user_query: str):
+    start_total = time.time()
+
+    # FASE 1: Retrieval denso Bi-Encoder (k=10 per contenere latenza e RAM su Edge)
+    query_tensor = embedding_model.encode(user_query, convert_to_tensor=True)
+    results = collection.query(
+        query_embeddings=[query_tensor.cpu().tolist()],
+        n_results=10
+    )
+
+    documents = results['documents'][0]
+    metadatas = results['metadatas'][0]
+    distances = results['distances'][0]
+    chunk_ids = results['ids'][0]
+
+    # FASE 2: Re-ranking semantico con Cross-Encoder (normalizzazione sigmoide [0, 1])
+    query_doc_pairs = [[user_query, doc] for doc in documents]
+    scores_tensor = reranker.predict(
+        query_doc_pairs,
+        activation_fct=nn.Sigmoid(),
+        convert_to_tensor=True,
+        batch_size=8
+    )
+
+    ranked_results = []
+    for orig_idx, (doc, meta, dist, score, chunk_id) in enumerate(zip(documents, metadatas, distances, scores_tensor, chunk_ids)):
+        ranked_results.append({
+            'original_rank': orig_idx + 1,
+            'chunk_id': chunk_id,
+            'doc': doc,
+            'metadata': meta,
+            'chroma_dist': dist,
+            'rerank_score': score.item()
+        })
+
+    # Deallocazione esplicita dei tensori PyTorch temporanei prima dell'inferenza LLM su RAM unificata (4 GB)
+    del query_tensor, scores_tensor
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    ranked_results.sort(key=lambda x: x['rerank_score'], reverse=True)
+    # Selezione top-2 chunk: configurazione ottimale da benchmark per finestra di contesto -c 2048
+    top_2 = ranked_results[:2]
+
+    # FASE 3: Costruzione del Prompt e sintesi autoregressiva locale via llama-server
+    formatted_context = ""
+    for idx, item in enumerate(top_2, start=1):
+        source = item['metadata'].get('source', 'Sconosciuta')
+        page = item['metadata'].get('page', 'Sconosciuta')
+        chunk_id = item['chunk_id']
+        text = item['doc']
+        formatted_context += f"--- DOCUMENTO {idx} (ID Chunk: {chunk_id} | Fonte: {source} | Pag: {page}) ---\n{text}\n\n"
+
+    prompt = f"""Leggi attentamente i documenti forniti nel CONTESTO sottostante e rispondi in italiano alla DOMANDA DELL'UTENTE.
+
+    REGOLE DI RISPOSTA:
+1. FEDELTÀ TESTUALE: Utilizza ESATTAMENTE i nomi delle figure professionali e dei settori presenti nel testo, senza inventare o parafrasare i titoli.
+2. SOLO DATI PRESENTI: Basati esclusivamente sui documenti forniti. Non aggiungere informazioni esterne.
+3. CITAZIONE FONTI: Alla fine di ogni figura professionale o punto riportato, inserisci la citazione esatta usando file e pagina indicati nell'intestazione: [Fonte: NOME_FILE, Pag. X]
+4. STRUTTURA: Presenta i ruoli e gli sbocchi in un elenco puntato chiaro e ordinato.
+
+    CONTESTO DEI DOCUMENTI ESTRATTI:
+    {formatted_context}
+
+    DOMANDA DELL'UTENTE:
+    {user_query}
+
+    RISPOSTA:"""
+
+    # Payload JSON compatibile con API OpenAI; max_tokens=500 evita troncamenti mantenendo margine su -c 2048
+    payload = {
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.1,
+        "repeat_penalty": 1.15,
+        "repeat_last_n": 256,
+        "max_tokens": 500
+    }
+
+    req = urllib.request.Request(
+        LLAMA_SERVER_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"}
+    )
+
+    try:
+        start_gen = time.time()
+        # Chiamata HTTP sincrona verso il server locale e lettura telemetria token/latenza
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            res_data = json.loads(resp.read().decode("utf-8"))
+            answer_text = res_data['choices'][0]['message']['content']
+            finish_reason = res_data['choices'][0].get('finish_reason', 'N/D')
+            usage = res_data.get('usage', {})
+            prompt_tokens = usage.get('prompt_tokens', 0)
+            completion_tokens = usage.get('completion_tokens', 0)
+
+        gen_time = time.time() - start_gen
+        total_time = time.time() - start_total
+        tokens_sec = completion_tokens / gen_time if gen_time > 0 else 0.0
+
+        metrics_info = (
+            f"Generazione: {gen_time:.2f} s | Totale: {total_time:.2f} s | "
+            f"Token: {prompt_tokens} in / {completion_tokens} out ({tokens_sec:.2f} tok/s) | Stop: {finish_reason}"
+        )
+        return answer_text, top_2, metrics_info
+
+    except urllib.error.HTTPError as err:
+        return f"Errore HTTP {err.code} da llama-server: {err.reason}", top_2, ""
+    except urllib.error.URLError as err:
+        return (
+            f"Impossibile raggiungere `llama-server` su `{LLAMA_SERVER_URL}`. "
+            f"Verifica che il server locale sia avviato sulla porta 18080.\n\nDettaglio: {err.reason}",
+            top_2,
+            ""
+        )
+    except Exception as err:
+        return f"Errore durante la chiamata a Ministral-3-3B locale: {err}", top_2, ""
 
 
 # 4. FUNZIONE DI RENDERING DELLE FONTI (UI COMPATTA)
@@ -216,37 +358,43 @@ with st.sidebar:
     st.title("Info Progetto")
     st.markdown("""
     Applicazione basata su tecnice di rappresentazione vettoriale (embedding) e misure di similarità.\n
-    Integra un sistema **RAG (Retrivial-Augmented Generation)** per rispondere a domande su regolamenti universitari, corsi e sbocchi occupazionali 
+    Integra un sistema **RAG (Retrivial-Augmented Generation)** Cloud e Edge Locale per rispondere a domande su regolamenti universitari, corsi e sbocchi occupazionali 
     e un **Recommender System Testuale** per suggerire frammenti di testo correlati!
     """)
     st.divider()
     
     st.subheader("Architettura")
     st.markdown("""
-    * **Modello di Embedding Testuale (Bi-Encoder):** `paraphrase-multilingual-MiniLM-L12-v2`
-    * **Vector DB:** ChromaDB (Collection:`knowledge_base`)
-    * **Re-ranking con Cross-Encoder:** `mMiniLMv2-L12`
-    * **Sintesi LLM:** Gemini 3.5 Flash
-    * **Recommender:** Cosine Similarity
+- **Modello di Embedding Testuale (Bi-Encoder):** `paraphrase-multilingual-MiniLM-L12-v2`
+- **Vector DB:** ChromaDB (Collection:`knowledge_base`)
+- **Re-ranking con Cross-Encoder:** `mMiniLMv2-L12`
+- **Sintesi LLM Cloud:** Gemini 3.5 Flash (`top_15`)
+- **Sintesi LLM Edge:** Ministral-3-3B GGUF (`top_2`, `-c 2048`)
+- **Recommender:** Cosine Similarity
     """)
     st.divider()
     
     # Pulsante per resettare la cronologia della chat
     if st.button("🗑️ Cancella Cronologia Chat"):
         st.session_state.messages = []
+        st.session_state.edge_messages = []
         st.rerun()
 
 # Titolo Principale
 st.title("Assistente Universitario 🎓")
 
-# Creazione delle Schede (Tabs) dell'Interfaccia
-tab_chat, tab_rec = st.tabs(["Assistente RAG", "Recommender System Testuale"])
+# Creazione delle Schede (Tabs) dell'Interfaccia (con RAG Edge al centro)
+tab_chat, tab_edge, tab_rec = st.tabs([
+    "Assistente RAG Gemini Cloud",
+    "Assistente RAG Locale Ministral-3-3B",
+    "Recommender System Testuale"
+])
 
 
-# TAB 1: SISTEMA RAG CON RE-RANKING
+# TAB 1: SISTEMA RAG CON RE-RANKING (CLOUD - GEMINI)
 
 with tab_chat:
-    st.caption("Sistema locale RAG con modelli di Embedding Testuali Bi-Encoder e Cross-Encoder")
+    st.caption("Sistema RAG con modelli di Embedding Testuali Bi-Encoder, Cross-Encoder e sintesi Cloud Gemini 3.5 Flash")
 
     # Inizializzazione della cronologia messaggi in session_state se non presente
     if "messages" not in st.session_state:
@@ -255,8 +403,8 @@ with tab_chat:
     # 1. Creazione del contenitore per i messaggi SOPRA la barra di input
     chat_container = st.container()
 
-    # 2. Barra di input posizionata sempre in fondo al Tab
-    user_input = st.chat_input("Fai una domanda sui regolamenti o sui corsi di studio...")
+    # 2. Barra di input posizionata sempre in fondo al Tab (key univoca per evitare collisioni tra tab)
+    user_input = st.chat_input("Fai una domanda sui regolamenti o sui corsi di studio...", key="chat_input_cloud")
 
     # 3. Rendering della cronologia e dei nuovi messaggi dentro il contenitore superiore
     with chat_container:
@@ -264,6 +412,8 @@ with tab_chat:
         for message in st.session_state.messages:
             with st.chat_message(message["role"]):
                 st.markdown(message["content"])
+                if message.get("metrics"):
+                    st.caption(f"⏱️ {message['metrics']}")
                 if "sources" in message:
                     render_sources_expander(message["sources"])
 
@@ -277,10 +427,12 @@ with tab_chat:
             # 2. Elaborazione ed esecuzione della pipeline RAG a due stadi
             with st.chat_message("assistant"):
                 with st.spinner("Sto consultando i documenti testuali... 🔍"):
-                    answer, top_sources = run_rag_pipeline(user_input)
+                    answer, top_sources, metrics_info = run_rag_pipeline(user_input)
                     
                     # Visualizzazione della risposta generata dall'LLM
                     st.markdown(answer)
+                    if metrics_info:
+                        st.caption(f"⏱️ {metrics_info}")
                     render_sources_expander(top_sources)
                     
 
@@ -288,12 +440,59 @@ with tab_chat:
             st.session_state.messages.append({
                 "role": "assistant",
                 "content": answer,
+                "metrics": metrics_info,
                 "sources": top_sources
             })
             st.rerun()
 
 
-# TAB 2: RECOMMENDER SYSTEM TESTUALE
+# TAB 2: SISTEMA RAG EDGE LOCALE (MINISTRAL-3-3B)
+
+with tab_edge:
+    st.caption("Sistema RAG locale con modello Ministral-3-3B (eseguito tramite llama.cpp)")
+
+    # Stato di sessione dedicato per isolare la cronologia locale da quella Cloud
+    if "edge_messages" not in st.session_state:
+        st.session_state.edge_messages = []
+
+    # Container superiore per i messaggi e barra di input dedicata con key univoca
+    edge_chat_container = st.container()
+    edge_user_input = st.chat_input("Fai una domanda al modello locale Ministral-3-3B...", key="chat_input_edge")
+
+    with edge_chat_container:
+        # Rendering cronologia locale e relativa telemetria di esecuzione
+        for message in st.session_state.edge_messages:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
+                if message.get("metrics"):
+                    st.caption(f"⏱️ {message['metrics']}")
+                if "sources" in message:
+                    render_sources_expander(message["sources"])
+
+        if edge_user_input:
+            st.session_state.edge_messages.append({"role": "user", "content": edge_user_input})
+            with st.chat_message("user"):
+                st.markdown(edge_user_input)
+
+            # Esecuzione pipeline RAG locale su Jetson Nano con metriche di latenza/throughput
+            with st.chat_message("assistant"):
+                with st.spinner("Elaborazione locale con Ministral-3-3B (attendere ~40-60s)..."):
+                    answer, top_sources, metrics_info = run_edge_rag_pipeline(edge_user_input)
+                    st.markdown(answer)
+                    if metrics_info:
+                        st.caption(f"⏱️ {metrics_info}")
+                    render_sources_expander(top_sources)
+
+            st.session_state.edge_messages.append({
+                "role": "assistant",
+                "content": answer,
+                "metrics": metrics_info,
+                "sources": top_sources
+            })
+            st.rerun()
+
+
+# TAB 3: RECOMMENDER SYSTEM TESTUALE
 
 with tab_rec:
     st.subheader("Raccomandazione Documenti Testuali")
