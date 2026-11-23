@@ -33,6 +33,7 @@ if not GEMINI_API_KEY:
 # Configurazione parametri per ChromaDB
 CHROMA_PATH = "vector_db"
 COLLECTION_NAME = "knowledge_base"
+N_chunks = 6
 
 def main():
     # Avvio cronometro per misurare il tempo totale della pipeline
@@ -62,6 +63,8 @@ def main():
     embedding_model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
 
     # 3. Definizione della domanda di prova e conversione in tensore PyTorch
+    # user_query = "Quali lauree ci sono all'Università di Ferrara?"
+    # user_query = "Quali sono gli esami del primo anno della laurea triennale in Ingegneria Elettronica ed Informatica?"
     user_query = "Quali sono gli sbocchi occupazionali e professionali previsti per un laureato in Ingegneria Elettronica ed Informatica?"
     print(f"\nDomanda di test: '{user_query}'", flush=True)
 
@@ -111,18 +114,30 @@ def main():
     # Ordinamento decrescente in base al punteggio del Cross-Encoder
     ranked_results.sort(key=lambda x: x['rerank_score'], reverse=True)
 
-    # Filtraggio dei 6 chunk più pertinenti
-    top_6 = ranked_results[:6]
-    # top_3 = ranked_results[:3]
+    # Filtraggio dei chunk più pertinenti
+    top_chunk = ranked_results[:N_chunks]
+   
+    # Stampa di confronto tra Top chunks Bi-Encoder e Top chunks Cross-Encoder
+    print("\n--- TOP CHUNK BI-ENCODER (PRIMA DEL RE-RANKING) ---", flush=True)
+    for rank in range(10):
+        source = metadatas[rank].get('source', 'N/D')
+        page = metadatas[rank].get('page', 'N/D')
+        print(f"  {rank + 1}. ID: {chunk_ids[rank]} | Fonte: {source} (Pag. {page}) | Distanza: {distances[rank]:.4f}", flush=True)
 
+    print("\n--- TOP CHUNK CROSS-ENCODER (PASSATI AL MODELLO) ---", flush=True)
+    for rank, item in enumerate(top_chunk, start=1):
+        source = item['metadata'].get('source', 'N/D')
+        page = item['metadata'].get('page', 'N/D')
+        print(f"  {rank}. ID: {item['chunk_id']} | Fonte: {source} (Pag. {page}) | Score: {item['rerank_score']:.4f} (Ex Bi-Encoder: #{item['original_rank']})", flush=True)
+    print("-" * 52 + "\n", flush=True)
 
     # FASE 3: SINTESI LLM IN CLOUD (GEMINI)
     
     print("7. Costruzione del Prompt per il Cloud...", flush=True)
 
-    # Concatenazione dei 6 migliori chunk in un'unica stringa formattata
+    # Concatenazione dei migliori chunk in un'unica stringa formattata
     formatted_context = ""
-    for idx, item in enumerate(top_6, start=1):
+    for idx, item in enumerate(top_chunk, start=1):
         source = item['metadata'].get('source', 'Sconosciuta')
         page = item['metadata'].get('page', 'Sconosciuta')
         chunk_id = item['chunk_id']
@@ -130,16 +145,13 @@ def main():
         formatted_context += f"--- DOCUMENTO {idx} (ID Chunk: {chunk_id} | Fonte: {source} | Pag: {page}) ---\n{text}\n\n"
 
     # Ingegneria del Prompt (Prompt Engineering)
-    prompt = f"""Sei un orientatore universitario rigoroso, preciso ed esaustivo.
-    Il tuo compito è rispondere alla domanda dell'utente basandoti ESCLUSIVAMENTE sui documenti forniti nel CONTESTO sottostante.
+    prompt = f"""Leggi attentamente i documenti forniti nel CONTESTO sottostante e rispondi in italiano alla DOMANDA DELL'UTENTE.
 
-    REGOLE TASSATIVE DI RISPOSTA:
-    1. FEDELTÀ TESTUALE ASSOLUTA: Utilizza ESATTAMENTE i nomi delle figure professionali e dei settori presenti nel testo. NON inventare, sintetizzare con sinonimi o parafrasare i titoli (es. usa "Tecnici Web" se scritto così, NON "Specialista informatico").
-    2. NESSUNA ALLUCINAZIONE: Se un'informazione o figura professionale non è esplicitamente citata nei documenti, NON includerla per alcun motivo.
-    3. CITAZIONE FONTI: Alla fine di OGNI figura professionale o concetto riportato, inserisci la citazione esatta usando il file e la pagina indicati nell'intestazione del documento sorgente.
-    Formato obbligatorio citazione: [Fonte: NOME_FILE, Pag. X]
-    4. PAGINAZIONE: Considera la pagina indicata nell'intestazione di ciascun documento (es. Pag: 9) come l'UNICA pagina ufficiale valida per quel testo.
-    5. STRUTTURA: Presenta i ruoli e gli sbocchi in un elenco puntato chiaro e descrittivo.
+    REGOLE DI RISPOSTA:
+    1. FEDELTÀ TESTUALE: Riporta ESATTAMENTE i dati, i termini e i requisiti presenti nel testo, senza inventare o aggiungere informazioni esterne.
+    2. SOLO DATI PRESENTI: Basati esclusivamente sui documenti forniti. Se l'informazione non è presente, dichiaralo esplicitamente.
+    3. CITAZIONE FONTI: Alla fine di ogni punto riportato, inserisci la citazione esatta usando file e pagina indicati nell'intestazione: [Fonte: NOME_FILE, Pag. X]
+    4. STRUTTURA: Presenta le informazioni in un elenco puntato chiaro e ordinato.
 
     CONTESTO DEI DOCUMENTI ESTRATTI:
     {formatted_context}
@@ -149,15 +161,19 @@ def main():
 
     RISPOSTA:"""
 
-    print("8. Invio richiesta a Gemini 3.5 Flash (Attendere...)", flush=True)
+    print("8. Invio richiesta a Gemini 3.6 Flash (Attendere...)", flush=True)
 
-    # Chiamata HTTP diretta all'endpoint REST ufficiale di Gemini 3.5 Flash
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={GEMINI_API_KEY}"
+    # Chiamata HTTP diretta all'endpoint REST ufficiale di Gemini 1.5 Flash
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key={GEMINI_API_KEY}"
     
     # Definizione del payload JSON (dizionario) richiesto per la chiamata all'API di Gemini
+    # Aggiunto maxOutputTokens per allinearlo ai test eseguiti in locale
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.1}
+        "generationConfig": {
+            "temperature": 0.1,
+            "maxOutputTokens": 8192
+        }
     }
 
     # Preparazione della richiesta HTTP con url, payload e headers (che specifica il tipo di chiamata json)
@@ -167,9 +183,14 @@ def main():
         headers={"Content-Type": "application/json"}
     )
 
+    # Variabili per i token (inizializzate a zero per sicurezza)
+    prompt_tokens = 0
+    gen_tokens = 0
+    total_tokens = 0
+
     # Invio della richiesta a Gemini e gestione della risposta
     try:
-        # Avvio cronometro per misurare il tempo di sola generazione locale
+        # Avvio cronometro per misurare il tempo di sola generazione in Cloud
         start_gen = time.time()
 
         # urlopen() invia la richiesta HTTP POST
@@ -179,6 +200,12 @@ def main():
         with urllib.request.urlopen(req) as resp:
             res_data = json.loads(resp.read().decode("utf-8"))
             answer_text = res_data['candidates'][0]['content']['parts'][0]['text']
+            
+            # Estrazione dei metadati di utilizzo token per il piano gratuito e per confronto
+            usage = res_data.get('usageMetadata', {})
+            prompt_tokens = usage.get('promptTokenCount', 0)
+            gen_tokens = usage.get('candidatesTokenCount', 0)
+            total_tokens = usage.get('totalTokenCount', 0)
 
         gen_time = time.time() - start_gen
         total_time = time.time() - start_total
@@ -193,12 +220,17 @@ def main():
         print(f"\nERRORE nella chiamata API a Gemini: {err}")
         return
 
+    # Calcolo della velocità di decode stimata (Network + Generazione)
+    decode_speed = gen_tokens / gen_time if gen_time > 0 else 0
+
     print("\n" + "=" * 60)
-    print("RISPOSTA GENERATA DA GEMINI:")
+    print("RISPOSTA GENERATA DA GEMINI (Testuale):")
     print("=" * 60)
     print(answer_text)
     print("=" * 60)
-    print(f"Tempo di sola generazione: {gen_time:.2f} s | Tempo totale pipeline: {total_time:.2f} s")
+    print(f"Token Input: {prompt_tokens} | Token Output: {gen_tokens} | Totale Token: {total_tokens}")
+    print(f"Tempo di richiesta (RTT + Gen): {gen_time:.2f} s | Tempo totale pipeline: {total_time:.2f} s")
+    print(f"Velocità stimata (Incluso Network): {decode_speed:.2f} tok/s")
 
 
 if __name__ == "__main__":

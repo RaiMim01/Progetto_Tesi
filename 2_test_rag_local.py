@@ -24,6 +24,7 @@ LLAMA_SERVER_URL = "http://127.0.0.1:18080/v1/chat/completions"
 # Configurazione parametri per ChromaDB
 CHROMA_PATH = "vector_db"
 COLLECTION_NAME = "knowledge_base"
+N_chunks=4
 
 def main():
     # Avvio cronometro per misurare il tempo totale della pipeline
@@ -49,12 +50,14 @@ def main():
     print(f"   Database connesso. Documenti totali indicizzati: {collection.count()}", flush=True)
 
     # 2. Caricamento Modello di Embedding Bi-Encoder(PyTorch)
-    print("2. Caricamento modello di embedding MODIFICA DA 'all-MiniLM-L6-v2' A 'paraphrase-multilingual-MiniLM-L12-v2'...", flush=True)
+    print("2. Caricamento modello di embedding 'paraphrase-multilingual-MiniLM-L12-v2'...", flush=True)
     embedding_model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
 
     # 3. Definizione della domanda di prova e conversione in tensore PyTorch
-    user_query = "Quali sono i requisiti e le modalità per la prova finale di laurea?"
-    # user_query = "Mostrami le materie del primo anno del corso di laurea in ingegneria informatica e i relativi CFU."
+
+    user_query = "Quali lauree ci sono all'Università di Ferrara?"
+    # user_query = "Quanti anni dura la laurea triennale in Ingegneria Elettronica ed Informatica?"
+    # user_query = "Quali sono gli esami del primo anno della laurea triennale in Ingegneria Elettronica ed Informatica?"
     # user_query = "Quali sono gli sbocchi occupazionali e professionali previsti per un laureato in Ingegneria Elettronica ed Informatica?"
     print(f"\nDomanda di test: '{user_query}'", flush=True)
 
@@ -111,20 +114,18 @@ def main():
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    # Filtraggio dei 3 chunk più pertinenti per rispettare la finestra di contesto -c 2048
-    # top_6 = ranked_results[:6]
-    # top_3 = ranked_results[:3]
-    top_2 = ranked_results[:2]
+    # Filtraggio dei N chunks più pertinenti per rispettare la finestra di contesto
+    top_chunk = ranked_results[:N_chunks]
 
-    # Stampa di confronto tra Top 3 Bi-Encoder e Top 3 Cross-Encoder
-    print("\n--- TOP 3 CHUNK BI-ENCODER (PRIMA DEL RE-RANKING) ---", flush=True)
-    for rank in range(3):
+    # Stampa di confronto tra Top chunks Bi-Encoder e Top chunks Cross-Encoder
+    print("\n--- TOP CHUNK BI-ENCODER (PRIMA DEL RE-RANKING) ---", flush=True)
+    for rank in range(10):
         source = metadatas[rank].get('source', 'N/D')
         page = metadatas[rank].get('page', 'N/D')
         print(f"  {rank + 1}. ID: {chunk_ids[rank]} | Fonte: {source} (Pag. {page}) | Distanza: {distances[rank]:.4f}", flush=True)
 
-    print("\n--- TOP 2 CHUNK CROSS-ENCODER (PASSATI AL MODELLO) ---", flush=True)
-    for rank, item in enumerate(top_2, start=1):
+    print("\n--- TOP CHUNK CROSS-ENCODER (PASSATI AL MODELLO) ---", flush=True)
+    for rank, item in enumerate(top_chunk, start=1):
         source = item['metadata'].get('source', 'N/D')
         page = item['metadata'].get('page', 'N/D')
         print(f"  {rank}. ID: {item['chunk_id']} | Fonte: {source} (Pag. {page}) | Score: {item['rerank_score']:.4f} (Ex Bi-Encoder: #{item['original_rank']})", flush=True)
@@ -135,9 +136,9 @@ def main():
     
     print("7. Costruzione del Prompt per il modello locale...", flush=True)
 
-    # Concatenazione dei 2 migliori chunk in un'unica stringa formattata
+    # Concatenazione dei migliori chunk in un'unica stringa formattata
     formatted_context = ""
-    for idx, item in enumerate(top_2, start=1):
+    for idx, item in enumerate(top_chunk, start=1):
         source = item['metadata'].get('source', 'Sconosciuta')
         page = item['metadata'].get('page', 'Sconosciuta')
         chunk_id = item['chunk_id']
@@ -148,10 +149,10 @@ def main():
     prompt = f"""Leggi attentamente i documenti forniti nel CONTESTO sottostante e rispondi in italiano alla DOMANDA DELL'UTENTE.
 
     REGOLE DI RISPOSTA:
-    1. FEDELTÀ TESTUALE: Utilizza ESATTAMENTE i nomi delle figure professionali e dei settori presenti nel testo, senza inventare o parafrasare i titoli.
-    2. SOLO DATI PRESENTI: Basati esclusivamente sui documenti forniti. Non aggiungere informazioni esterne.
-    3. CITAZIONE FONTI: Alla fine di ogni figura professionale o punto riportato, inserisci la citazione esatta usando file e pagina indicati nell'intestazione: [Fonte: NOME_FILE, Pag. X]
-    4. STRUTTURA: Presenta i ruoli e gli sbocchi in un elenco puntato chiaro e ordinato.
+    1. FEDELTÀ TESTUALE: Riporta ESATTAMENTE i dati, i termini e i requisiti presenti nel testo, senza inventare o aggiungere informazioni esterne.
+    2. SOLO DATI PRESENTI: Basati esclusivamente sui documenti forniti. Se l'informazione non è presente, dichiaralo esplicitamente.
+    3. CITAZIONE FONTI: Alla fine di ogni punto riportato, inserisci la citazione esatta usando file e pagina indicati nell'intestazione: [Fonte: NOME_FILE, Pag. X]
+    4. STRUTTURA: Presenta le informazioni in un elenco puntato chiaro e ordinato.
 
     CONTESTO DEI DOCUMENTI ESTRATTI:
     {formatted_context}
@@ -169,7 +170,7 @@ def main():
         "temperature": 0.1,
         "repeat_penalty": 1.15,
         "repeat_last_n": 256,
-        "max_tokens": 500
+        "max_tokens": 1024
     }
 
     # Preparazione della richiesta HTTP con url, payload e headers (che specifica il tipo di chiamata json)
@@ -194,6 +195,9 @@ def main():
             usage = res_data.get('usage', {})
             prompt_tokens = usage.get('prompt_tokens', 0)
             completion_tokens = usage.get('completion_tokens', 0)
+            timings = res_data.get('timings', {})
+            ttft_s = timings.get('prompt_ms', 0.0) / 1000.0
+            real_tok_s = timings.get('predicted_per_second', 0.0)
 
 
         gen_time = time.time() - start_gen
@@ -220,8 +224,9 @@ def main():
     print("=" * 60)
     print(f"Tempo di sola generazione: {gen_time:.2f} s | Tempo totale pipeline: {total_time:.2f} s")
     tokens_sec = completion_tokens / gen_time if gen_time > 0 else 0
-    print(f"Tempo di sola generazione: {gen_time:.2f} s | Tempo totale pipeline: {total_time:.2f} s")
     print(f"Token prompt: {prompt_tokens} | Token generati: {completion_tokens} ({tokens_sec:.2f} tok/s) | Stop: {finish_reason}")
+    print(f"TTFT (Prefill): {ttft_s:.2f} s | Tempo totale generazione: {gen_time:.2f} s | Tempo totale pipeline: {total_time:.2f} s")
+    print(f"Token prompt: {prompt_tokens} | Token generati: {completion_tokens} | Totale: {prompt_tokens + completion_tokens}/4096 | Velocità decode: {real_tok_s:.2f} tok/s | Stop: {finish_reason}")
 
 if __name__ == "__main__":
     main()

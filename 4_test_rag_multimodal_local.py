@@ -23,7 +23,7 @@ import gc
 CHROMA_PATH = "vector_db"
 COLLECTION_NAME = "multimodal_kb"
 DATA_PATH = "documents"
-TOP_K_IMAGES = 1
+TOP_K_IMAGES = 2
 # Endpoint locale del server C++ llama.cpp avviato sull'altro terminale (porta 18080)
 LLAMA_SERVER_URL = "http://127.0.0.1:18080/v1/chat/completions"
 
@@ -79,8 +79,10 @@ def main():
         model_name, torch_dtype=torch.float32, trust_remote_code=True
     )
 
-    user_query = "Quali sono i requisiti e le modalità per la prova finale di laurea?"
-    # user_query = "Mostrami le materie del primo anno del corso di laurea in ingegneria informatica e i relativi CFU."
+    # user_query = "Quali lauree ci sono all'Università di Ferrara?"
+    # user_query = "Quanti anni dura la laurea triennale in Ingegneria Elettronica ed Informatica?"
+    # user_query = "Quali sono gli esami del primo anno della laurea triennale in Ingegneria Elettronica ed Informatica?"
+    user_query = "Quali sono gli sbocchi occupazionali e professionali previsti per un laureato in Ingegneria Elettronica ed Informatica?"
     print(f"\nDomanda dell'utente: '{user_query}'", flush=True)
 
     print("3. Vettorizzazione della domanda...", flush=True)
@@ -149,7 +151,7 @@ def main():
         "messages": [
             {"role": "user", "content": message_content}
         ],
-        "max_tokens": 300,     # Lunghezza massima della risposta generata
+        "max_tokens": 1024,     # Lunghezza massima della risposta generata
         "temperature": 0.1,      # Bassa temperatura per risposte deterministiche e fedeli al documento
         "repeat_penalty": 1.2,    # Impedisce al modello 2B di entrare in loop ripetitivi negli elenchi
         "repeat_last_n": 256,  # Controlla la ripetizione degli ultimi token generati
@@ -171,6 +173,16 @@ def main():
             # Lettura ed estrazione del testo generato dalla risposta JSON del server
             result = json.loads(response.read().decode("utf-8"))
             answer_text = result["choices"][0]["message"]["content"].strip()
+            finish_reason = result["choices"][0].get("finish_reason", "N/D")
+
+            usage = result.get("usage", {})
+            prompt_tokens = usage.get("prompt_tokens", 0)
+            completion_tokens = usage.get("completion_tokens", 0)
+
+            timings = result.get("timings", {})
+            ttft_s = timings.get("prompt_ms", 0.0) / 1000.0
+            real_tok_s = timings.get("predicted_per_second", 0.0)
+
             # Aggiunta automatica della fonte esatta recuperata dal database vettoriale
             answer_text = f"{answer_text}\n\n[Fonte: {fonti_reali}]"
     except urllib.error.URLError as e:
@@ -186,8 +198,8 @@ def main():
     print("=" * 60)
     print(answer_text)
     print("=" * 60)
-    print(f"Tempo di sola generazione: {gen_time:.2f} s | Tempo totale pipeline: {total_time:.2f} s")
-
+    print(f"TTFT (Vision + Prefill): {ttft_s:.2f} s | Tempo di sola generazione: {gen_time:.2f} s | Tempo totale pipeline: {total_time:.2f} s")
+    print(f"Token prompt (immagini + testo): {prompt_tokens} | Token generati: {completion_tokens} | Totale: {prompt_tokens + completion_tokens}/4096 | Velocità decode: {real_tok_s:.2f} tok/s | Stop: {finish_reason}")
 
 if __name__ == "__main__":
     main()
