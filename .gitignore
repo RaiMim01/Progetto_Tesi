@@ -2,6 +2,8 @@
 vector_db/
 documents/
 __pycache__/
+eval_results/
+Risultati_Valutazione_RAG.xlsx
 .DS_Store
 .env
 

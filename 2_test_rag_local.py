@@ -55,10 +55,32 @@ def main():
 
     # 3. Definizione della domanda di prova e conversione in tensore PyTorch
 
-    user_query = "Quali lauree ci sono all'Università di Ferrara?"
-    # user_query = "Quanti anni dura la laurea triennale in Ingegneria Elettronica ed Informatica?"
-    # user_query = "Quali sono gli esami del primo anno della laurea triennale in Ingegneria Elettronica ed Informatica?"
-    # user_query = "Quali sono gli sbocchi occupazionali e professionali previsti per un laureato in Ingegneria Elettronica ed Informatica?"
+    # 15 DOMANDE TEST:
+    # 1) Domande puntuali / Single-hop:
+    # user_query="Quanti CFU e quante ore frontali prevede l'insegnamento di 'Geometria e algebra' al primo anno di Ingegneria Elettronica e Informatica?"
+    # user_query="Entro quale data e con quanti CFU minimi uno studente del primo anno di Ingegneria Elettronica e Informatica può iscriversi al secondo anno senza risultare fuori corso?"
+    # user_query="Quali tecnologie utilizza DocFlow AI per combinare ricerca vettoriale densa e ricerca lessicale sparsa nella sua pipeline di retrieval ibrido?"
+    
+    # 2) Domande su tabelle, diagrammi e infografiche:
+    # user_query="In base allo schema architetturale illustrato nella Figura 1 di DocFlow AI, quali sono le tre macro-fasi della pipeline di Indexing (Batch / Offline)?"
+    # user_query="Se uno studente di Ingegneria Elettronica e Informatica ha già acquisito i crediti per 'Architettura e sviluppo di servizi Internet', quale esame non può inserire nel piano di studi secondo la tabella delle incompatibilità?"
+    user_query="Quali sono gli insegnamenti propedeutici obbligatori per poter sostenere l'esame di 'Analisi matematica II'?"
+
+    # 3) Domande Multi-hop / Sintesi tra più pagine o documenti:
+    # user_query="Quali sono tutti i corsi di laurea triennale dell'Università di Ferrara erogati prevalentemente a distanza secondo l'Allegato B al Regolamento Didattico?"
+    # user_query="Quali sono i tre macro-scenari industriali in cui DocFlow AI è stato validato sul campo nella Sezione 4.3 e quale riduzione percentuale dei tempi di riconciliazione ordini è stata ottenuta nel settore manifatturiero?"
+    # user_query="Come può uno studente assolvere gli Obblighi Formativi Aggiuntivi (OFA) assegnati al momento dell'immatricolazione in Ingegneria Elettronica e Informatica?"
+
+    # 4) Domande di ragionamento, calcolo e disambiguazione:
+    # user_query="Uno studente del secondo anno di Ingegneria Elettronica e Informatica ha superato tutti gli esami del primo anno tranne 'Lingua inglese: verifica delle conoscenze'. Può sostenere gli esami del terzo anno?"
+    # user_query="Un lavoratore con esperienza professionale pregressa si iscrive alla triennale in Ingegneria Elettronica e Informatica e possiede anche una certificazione informatica ECDL: quanti CFU al massimo può farsi riconoscere per l'esperienza lavorativa e quanti per l'ECDL?"
+    # user_query="Se uno studente sceglie nel terzo anno il curriculum di Ingegneria Informatica e vuole svolgere un tirocinio esterno più lungo sfruttando anche i crediti a libera scelta, quanti CFU complessivi può raggiungere per il tirocinio?"
+
+    # 5) Domande "trappola" / Out-of-context:
+    # user_query="A quanto ammonta l'importo esatto delle tasse universitarie annuali e qual è la soglia ISEE per l'esonero totale per gli studenti iscritti a Ingegneria Elettronica e Informatica a Ferrara?"
+    # user_query="Qual è il punteggio esatto di accuratezza (es. F1-score o percentuale di Faithfulness) ottenuto da DocFlow AI sui benchmark RAG rispetto ad Adobe Acrobat AI Assistant?"
+    # user_query="Chi è il docente titolare dell'insegnamento di 'Sistemi operativi' del secondo anno nell'anno accademico 2026/2027?"
+    
     print(f"\nDomanda di test: '{user_query}'", flush=True)
 
     print("3. Conversione della domanda in Tensore PyTorch...", flush=True)
@@ -227,6 +249,26 @@ def main():
     print(f"Token prompt: {prompt_tokens} | Token generati: {completion_tokens} ({tokens_sec:.2f} tok/s) | Stop: {finish_reason}")
     print(f"TTFT (Prefill): {ttft_s:.2f} s | Tempo totale generazione: {gen_time:.2f} s | Tempo totale pipeline: {total_time:.2f} s")
     print(f"Token prompt: {prompt_tokens} | Token generati: {completion_tokens} | Totale: {prompt_tokens + completion_tokens}/4096 | Velocità decode: {real_tok_s:.2f} tok/s | Stop: {finish_reason}")
+
+    # Stampa della risposta e le relative info su un file json per la valutazione automatica
+    os.makedirs("eval_results", exist_ok=True)
+    
+    # Nel file 2_test_rag_local.py ricordati di cambiare "modello": "cloud" in "modello": "local"
+    risultato_eval = {
+        "domanda": user_query,
+        "risposta": answer_text,
+        "contesti_recuperati": [item['doc'] for item in top_chunk],
+        "fonti": [f"{item['metadata'].get('source', 'N/D')} (Pag. {item['metadata'].get('page', 'N/D')})" for item in top_chunk],
+        "pipeline": "testuale",
+        "modello": "local" # CAMBIA IN "local" NEL FILE LOCALE
+    }
+    
+    # Salva un file JSON univoco basato sul timestamp
+    file_path = f"eval_results/test_txt_local_{int(time.time())}.json"
+    with open(file_path, "w", encoding="utf-8") as f:
+        json.dump(risultato_eval, f, indent=4, ensure_ascii=False)
+    
+    print(f"Risultati salvati per la valutazione in: {file_path}")
 
 if __name__ == "__main__":
     main()
